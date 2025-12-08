@@ -357,6 +357,7 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
     if (monster.aiType !== 'static' && attackDirection !== undefined) {
         // Knockback force: 3 units in the direction the player is facing
         knockbackVelocityX = attackDirection * 3;
+        console.log(`[Server] Knockback calculated: monster ${monsterId}, aiType ${monster.aiType}, attackDirection ${attackDirection}, knockbackVelocityX ${knockbackVelocityX}`);
     }
     
     // Broadcast damage to all players on map
@@ -752,7 +753,7 @@ io.on('connection', (socket) => {
         
         const { monsterId, damage, isCritical, attackType, playerDirection } = data;
         
-        console.log(`[Server] Attack received from ${currentPlayer.name}: monster ${monsterId}, damage ${damage}`);
+        console.log(`[Server] Attack received from ${currentPlayer.name}: monster ${monsterId}, damage ${damage}, playerDirection ${playerDirection}`);
         
         // Validate monster exists and is on this map
         if (!mapMonsters[currentMapId] || !mapMonsters[currentMapId][monsterId]) {
