@@ -127,9 +127,9 @@ function spawnMonster(mapId, type, spawnerData = {}) {
     
     // Use provided spawn position or generate random
     const x = spawnerData.x !== undefined ? spawnerData.x : Math.random() * (mapWidth - 100) + 50;
-    // For Y position: if provided use it, otherwise calculate based on ground level minus monster height
-    // This matches how the client calculates spawn positions: spawnY = groundY - anchorY
-    // anchorY is typically the monster's height for non-pixel-art monsters
+    // CRITICAL: Always use client-provided Y position if available, as it accounts for anchor points
+    // Client calculates: spawnY = surfaceY - anchorY - groundOffset
+    // If not provided, fall back to simple ground calculation
     const y = spawnerData.y !== undefined ? spawnerData.y : groundY - monsterHeight - 3;
     
     const direction = Math.random() > 0.5 ? 1 : -1;
@@ -152,15 +152,18 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         speed: speed,
         isDead: false,
         isMiniBoss: monsterTypeData.isMiniBoss || false,
-        width: monsterTypeData.width || 40,
+        width: monsterData.width || 40,
         height: monsterHeight,
         mapWidth: mapWidth,
-        groundY: y, // Store original spawn Y to keep monster at same height level
+        groundY: groundY, // Store the surface ground level (not spawn Y)
         spawnTime: Date.now(),
         lastUpdate: Date.now(),
         // Store spawn info for proper respawning
         spawnX: x,
-        spawnY: y
+        spawnY: y,
+        // Store surface X and width for patrol bounds preservation
+        patrolSurfaceX: spawnerData.surfaceX,
+        patrolSurfaceWidth: spawnerData.surfaceWidth
     };
     
     // Calculate patrol bounds based on platform/structure bounds if provided, otherwise use spawn position
@@ -333,7 +336,7 @@ function broadcastMonsterPositions() {
 /**
  * Handle monster damage from a player
  */
-function damageMonster(mapId, monsterId, damage, attackerId) {
+function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
     if (!mapMonsters[mapId] || !mapMonsters[mapId][monsterId]) return null;
     
     const monster = mapMonsters[mapId][monsterId];
@@ -349,13 +352,21 @@ function damageMonster(mapId, monsterId, damage, attackerId) {
     monster.hp -= damage;
     monster.lastUpdate = Date.now();
     
+    // Calculate knockback (only for non-static monsters)
+    let knockbackVelocityX = 0;
+    if (monster.aiType !== 'static' && attackDirection !== undefined) {
+        // Knockback force: 3 units in the direction the player is facing
+        knockbackVelocityX = attackDirection * 3;
+    }
+    
     // Broadcast damage to all players on map
     io.to(mapId).emit('monsterDamaged', {
         id: monsterId,
         damage: damage,
         currentHp: monster.hp,
         maxHp: monster.maxHp,
-        attackerId: attackerId
+        attackerId: attackerId,
+        knockbackVelocityX: knockbackVelocityX
     });
     
     // Check for death
@@ -414,10 +425,12 @@ function killMonster(mapId, monsterId) {
     const respawnTime = monster.isMiniBoss ? CONFIG.BOSS_RESPAWN_TIME : CONFIG.RESPAWN_TIME;
     
     // Store spawn info for respawn - don't use exact spawn coords, let it randomize
+    // Use stored surface bounds if available, otherwise reconstruct from patrol
     const respawnData = {
         // Don't set x/y - let spawnMonster randomize within surface bounds
-        surfaceX: monster.patrolMinX - 20, // Reconstruct surface bounds
-        surfaceWidth: (monster.patrolMaxX + 20) - (monster.patrolMinX - 20),
+        surfaceX: monster.patrolSurfaceX !== undefined ? monster.patrolSurfaceX : monster.patrolMinX - 20,
+        surfaceWidth: monster.patrolSurfaceWidth !== undefined ? monster.patrolSurfaceWidth : (monster.patrolMaxX + 20) - (monster.patrolMinX - 20),
+        y: monster.spawnY, // Use same Y as original spawn
         mapWidth: monster.mapWidth,
         groundY: monster.groundY,
         maxHp: monster.maxHp
@@ -737,7 +750,7 @@ io.on('connection', (socket) => {
     socket.on('attackMonster', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
-        const { monsterId, damage, isCritical, attackType } = data;
+        const { monsterId, damage, isCritical, attackType, playerDirection } = data;
         
         console.log(`[Server] Attack received from ${currentPlayer.name}: monster ${monsterId}, damage ${damage}`);
         
@@ -747,7 +760,7 @@ io.on('connection', (socket) => {
             return;
         }
         
-        const result = damageMonster(currentMapId, monsterId, damage, currentPlayer.odId);
+        const result = damageMonster(currentMapId, monsterId, damage, currentPlayer.odId, playerDirection);
         
         if (result && result.killed) {
             console.log(`[Server] ${currentPlayer.name} killed monster ${monsterId}, loot goes to ${result.lootRecipient}`);
