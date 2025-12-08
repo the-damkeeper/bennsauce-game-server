@@ -555,7 +555,7 @@ io.on('connection', (socket) => {
      * Player joins the game with their character data
      */
     socket.on('join', (data) => {
-        const { odId, name, mapId, x, y, customization, level, playerClass, guild, equipped, partyId } = data;
+        const { odId, name, mapId, x, y, customization, level, playerClass, guild, equipped, cosmeticEquipped, equippedMedal, displayMedals, partyId } = data;
         
         console.log(`[Server] Player ${name} joining with partyId: ${partyId}`);
         
@@ -578,6 +578,9 @@ io.on('connection', (socket) => {
             playerClass: playerClass || 'beginner',
             guild: guild || null,
             equipped: equipped || {},
+            cosmeticEquipped: cosmeticEquipped || {},
+            equippedMedal: equippedMedal || null,
+            displayMedals: displayMedals || [],
             partyId: partyId || null, // Track party for EXP sharing
             lastUpdate: Date.now(),
             socketId: socket.id
@@ -699,11 +702,13 @@ io.on('connection', (socket) => {
         const { message } = data;
         
         // Broadcast chat bubble to other players on map
-        socket.to(currentMapId).emit('playerChat', {
+        const chatData = {
             odId: currentPlayer.odId,
             name: currentPlayer.name,
             message
-        });
+        };
+        console.log(`[Server] Broadcasting chat from ${currentPlayer.name} to map ${currentMapId}:`, chatData);
+        socket.to(currentMapId).emit('playerChat', chatData);
     });
 
     /**
@@ -918,6 +923,47 @@ io.on('connection', (socket) => {
         
         const monsters = getMapMonsters(currentMapId);
         socket.emit('currentMonsters', monsters);
+    });
+
+    /**
+     * Player updates their appearance (equipment, cosmetics, guild, medal)
+     */
+    socket.on('updateAppearance', (data) => {
+        console.log(`[Server] Received updateAppearance from ${currentPlayer?.name || 'unknown'} on map ${currentMapId || 'none'}`);
+        if (!currentPlayer || !currentMapId) {
+            console.warn('[Server] updateAppearance ignored - no currentPlayer or mapId');
+            return;
+        }
+        
+        // Update player data on server
+        if (data.equipped !== undefined) {
+            currentPlayer.equipped = data.equipped;
+        }
+        if (data.cosmeticEquipped !== undefined) {
+            currentPlayer.cosmeticEquipped = data.cosmeticEquipped;
+        }
+        if (data.guild !== undefined) {
+            currentPlayer.guild = data.guild;
+        }
+        if (data.equippedMedal !== undefined) {
+            currentPlayer.equippedMedal = data.equippedMedal;
+        }
+        if (data.displayMedals !== undefined) {
+            currentPlayer.displayMedals = data.displayMedals;
+        }
+        
+        // Broadcast appearance update to other players on the map
+        const broadcastData = {
+            odId: currentPlayer.odId,
+            equipped: currentPlayer.equipped,
+            cosmeticEquipped: currentPlayer.cosmeticEquipped,
+            guild: currentPlayer.guild,
+            equippedMedal: currentPlayer.equippedMedal,
+            displayMedals: currentPlayer.displayMedals
+        };
+        socket.to(currentMapId).emit('playerAppearanceUpdated', broadcastData);
+        
+        console.log(`[Server] ${currentPlayer.name} updated appearance, broadcasting to map ${currentMapId}:`, broadcastData);
     });
 
     /**
