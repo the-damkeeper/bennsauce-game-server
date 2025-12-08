@@ -12,14 +12,23 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// Configure CORS to allow itch.io and other domains
+app.use(cors({
+    origin: '*',
+    credentials: true
+}));
 
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // In production, restrict this to your game's domain
-        methods: ["GET", "POST"]
-    }
+        origin: '*',
+        methods: ['GET', 'POST'],
+        credentials: true,
+        allowedHeaders: ['Content-Type']
+    },
+    transports: ['websocket', 'polling'],
+    allowEIO3: true
 });
 
 // Store connected players by map
