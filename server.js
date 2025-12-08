@@ -56,7 +56,7 @@ let nextMonsterId = 1;
 // Configuration
 const CONFIG = {
     POSITION_UPDATE_RATE: 50, // ms between position broadcasts (20 updates/sec)
-    PLAYER_TIMEOUT: 120000, // Remove player after 2 minutes of no updates
+    PLAYER_TIMEOUT: 172800000, // 48 hours - effectively disabled (allow AFK players to stay visible)
     MAX_PLAYERS_PER_MAP: 50,
     MONSTER_AI_RATE: 100, // ms between monster AI updates (10 updates/sec)
     MONSTER_BROADCAST_RATE: 100, // ms between position broadcasts
