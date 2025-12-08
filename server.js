@@ -152,7 +152,7 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         speed: speed,
         isDead: false,
         isMiniBoss: monsterTypeData.isMiniBoss || false,
-        width: monsterData.width || 40,
+        width: monsterTypeData.width || 40,
         height: monsterHeight,
         mapWidth: mapWidth,
         groundY: groundY, // Store the surface ground level (not spawn Y)
