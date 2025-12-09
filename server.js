@@ -528,14 +528,26 @@ function killMonster(mapId, monsterId) {
         maxHp: monster.maxHp
     };
     
+    // Store monster type for respawn (in case map data is cleared)
+    const monsterType = monster.type;
+    
     setTimeout(() => {
-        // Remove dead monster
-        delete mapMonsters[mapId][monsterId];
+        // SAFETY CHECK: Make sure map still exists before trying to delete/respawn
+        // This prevents crashes when map is cleaned up while respawn is pending
+        if (!mapMonsters[mapId]) {
+            console.log(`[Server] Map ${mapId} no longer exists, skipping respawn for ${monsterId}`);
+            return;
+        }
+        
+        // Remove dead monster (with additional safety check)
+        if (mapMonsters[mapId][monsterId]) {
+            delete mapMonsters[mapId][monsterId];
+        }
         
         // Spawn replacement if map still has players
         if (maps[mapId] && Object.keys(maps[mapId]).length > 0) {
             // Respawn with randomized position on same surface
-            spawnMonster(mapId, monster.type, respawnData);
+            spawnMonster(mapId, monsterType, respawnData);
         }
     }, respawnTime);
     
@@ -1283,11 +1295,16 @@ setInterval(() => {
                 console.log(`[Server] Removed inactive player: ${player.name}`);
             }
         }
-        // Clean up empty maps and their monsters
+        // Clean up empty maps
+        // Only delete monster data if no monsters are pending (prevents crash on respawn)
         if (Object.keys(maps[mapId]).length === 0) {
             delete maps[mapId];
-            delete mapMonsters[mapId];
-            delete mapSpawnData[mapId];
+            // Only clean up monster data if no monsters exist (all have respawned or been cleaned)
+            if (mapMonsters[mapId] && Object.keys(mapMonsters[mapId]).length === 0) {
+                delete mapMonsters[mapId];
+                delete mapSpawnData[mapId];
+                console.log(`[Server] Cleaned up empty map: ${mapId}`);
+            }
         }
     }
 }, 10000); // Check every 10 seconds
