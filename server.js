@@ -478,6 +478,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
         // Elite Gold (50k-100k)
         const eliteGoldAmount = Math.floor(50000 + Math.random() * 50000);
         drops.push({
+            id: `drop_${Date.now()}_${dropIndex++}_${Math.random().toString(36).substr(2, 9)}`,
             name: 'Gold',
             x: baseX - 40,
             y: baseY,
@@ -490,6 +491,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
         const ticketCount = Math.floor(2 + Math.random() * 4);
         for (let i = 0; i < ticketCount; i++) {
             drops.push({
+                id: `drop_${Date.now()}_${dropIndex++}_${Math.random().toString(36).substr(2, 9)}`,
                 name: 'Gachapon Ticket',
                 x: baseX - 20 + (i * 15),
                 y: baseY,
@@ -502,6 +504,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
         const scrollCount = Math.floor(4 + Math.random() * 5);
         for (let i = 0; i < scrollCount; i++) {
             drops.push({
+                id: `drop_${Date.now()}_${dropIndex++}_${Math.random().toString(36).substr(2, 9)}`,
                 name: 'Enhancement Scroll',
                 x: baseX + 20 + (i * 15),
                 y: baseY,
@@ -526,6 +529,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
                 const baseGoldAmount = Math.floor(Math.random() * ((loot.max || 10) - (loot.min || 1) + 1) + (loot.min || 1));
                 const goldAmount = monster.isEliteMonster ? baseGoldAmount * 20 : baseGoldAmount;
                 drops.push({
+                    id: `drop_${Date.now()}_${dropIndex}_${Math.random().toString(36).substr(2, 9)}`,
                     name: 'Gold',
                     x: baseX + (dropIndex * 10),
                     y: baseY,
@@ -535,6 +539,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
                 });
             } else {
                 drops.push({
+                    id: `drop_${Date.now()}_${dropIndex}_${Math.random().toString(36).substr(2, 9)}`,
                     name: loot.name,
                     x: baseX + (dropIndex * 10),
                     y: baseY,
@@ -547,7 +552,9 @@ function generateMonsterDrops(mapId, monster, monsterId) {
     
     // Guaranteed salami stick on baby slimes
     if (monster.type === 'babySlime' || monster.type === 'babyRedSlime' || monster.type === 'babyBlueSlime') {
+        dropIndex++;
         drops.push({
+            id: `drop_${Date.now()}_${dropIndex}_${Math.random().toString(36).substr(2, 9)}`,
             name: 'Salami Stick',
             x: baseX,
             y: baseY,
