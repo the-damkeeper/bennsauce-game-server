@@ -74,8 +74,9 @@ const CONFIG = {
     MAX_TELEPORT_DISTANCE: 2000, // Max distance player can move in one update (pixels)
     
     // GM Authentication - password is stored in environment variable
-    // Set GM_PASSWORD environment variable on Render/hosting platform
-    GM_PASSWORD: process.env.GM_PASSWORD || null
+    // Set GM_PASSWORD environment variable on Render/hosting platform for production
+    // Default password for development - CHANGE THIS IN PRODUCTION!
+    GM_PASSWORD: process.env.GM_PASSWORD || 'bennsauce_gm_2024_secret'
 };
 
 // Authorized GM sessions (socket IDs that have been authenticated)
