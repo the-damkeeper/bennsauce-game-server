@@ -152,6 +152,8 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         speed: speed,
         isDead: false,
         isMiniBoss: monsterTypeData.isMiniBoss || false,
+        isEliteMonster: false, // Elites are created by client transformation
+        isTrialBoss: false,
         width: monsterTypeData.width || 40,
         height: monsterHeight,
         mapWidth: mapWidth,
@@ -163,7 +165,10 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         spawnY: y,
         // Store surface X and width for patrol bounds preservation
         patrolSurfaceX: spawnerData.surfaceX,
-        patrolSurfaceWidth: spawnerData.surfaceWidth
+        patrolSurfaceWidth: spawnerData.surfaceWidth,
+        // Elite monster properties (set when transformed)
+        originalMaxHp: null,
+        originalDamage: null
     };
     
     // Calculate patrol bounds based on platform/structure bounds if provided, otherwise use spawn position
@@ -223,8 +228,9 @@ function startMonsterAI() {
  */
 function updateAllMonsters() {
     for (const mapId in mapMonsters) {
-        // Skip if no players on this map
-        if (!maps[mapId] || Object.keys(maps[mapId]).length === 0) continue;
+        // Update monsters regardless of player presence (server runs independently)
+        // Only skip if map has never been initialized
+        if (!mapMonsters[mapId]) continue;
         
         for (const monsterId in mapMonsters[mapId]) {
             const monster = mapMonsters[mapId][monsterId];
@@ -774,6 +780,64 @@ io.on('connection', (socket) => {
     });
 
     /**
+     * Player transformed a monster to elite (broadcast to all clients)
+     */
+    socket.on('transformElite', (data) => {
+        console.log(`[ELITE DEBUG Server] ===== RECEIVED transformElite event =====`);
+        console.log(`[ELITE DEBUG Server] Data:`, data);
+        console.log(`[ELITE DEBUG Server] Current player:`, currentPlayer?.name);
+        console.log(`[ELITE DEBUG Server] Current map:`, currentMapId);
+        
+        if (!currentPlayer || !currentMapId) {
+            console.log(`[ELITE DEBUG Server] Transform received but no player/map:`, {
+                hasPlayer: !!currentPlayer,
+                hasMap: !!currentMapId
+            });
+            return;
+        }
+        
+        const { monsterId, maxHp, damage, originalMaxHp, originalDamage } = data;
+        console.log(`[ELITE DEBUG Server] Transform request from ${currentPlayer.name}:`, {
+            monsterId,
+            mapId: currentMapId,
+            maxHp,
+            damage
+        });
+        
+        // Update server monster state
+        if (mapMonsters[currentMapId] && mapMonsters[currentMapId][monsterId]) {
+            const monster = mapMonsters[currentMapId][monsterId];
+            monster.isEliteMonster = true;
+            monster.maxHp = maxHp;
+            monster.hp = maxHp;
+            monster.damage = damage;
+            monster.originalMaxHp = originalMaxHp;
+            monster.originalDamage = originalDamage;
+            
+            console.log(`[ELITE DEBUG Server] Monster ${monsterId} transformed to ELITE by ${currentPlayer.name}`);
+            console.log(`[ELITE DEBUG Server] Broadcasting to room: ${currentMapId}`);
+            
+            // Broadcast to ALL clients on map (including sender) so they all apply the transformation
+            io.to(currentMapId).emit('monsterTransformedElite', {
+                monsterId: monsterId,
+                maxHp: maxHp,
+                hp: maxHp,
+                damage: damage,
+                originalMaxHp: originalMaxHp,
+                originalDamage: originalDamage
+            });
+            
+            console.log(`[ELITE DEBUG Server] Broadcast complete`);
+        } else {
+            console.log(`[ELITE DEBUG Server] Monster NOT FOUND:`, {
+                hasMapMonsters: !!mapMonsters[currentMapId],
+                hasThisMonster: mapMonsters[currentMapId] ? !!mapMonsters[currentMapId][monsterId] : false,
+                availableMonsters: mapMonsters[currentMapId] ? Object.keys(mapMonsters[currentMapId]) : []
+            });
+        }
+    });
+
+    /**
      * Player picks up an item - broadcast to all players so they can remove it
      */
     socket.on('itemPickup', (data) => {
@@ -964,6 +1028,37 @@ io.on('connection', (socket) => {
         socket.to(currentMapId).emit('playerAppearanceUpdated', broadcastData);
         
         console.log(`[Server] ${currentPlayer.name} updated appearance, broadcasting to map ${currentMapId}:`, broadcastData);
+    });
+
+    /**
+     * Player death - broadcast to other players on map
+     */
+    socket.on('playerDeath', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        console.log(`[Server] ${currentPlayer.name} died on ${currentMapId}`);
+        
+        // Broadcast death to all other players on the map
+        socket.to(currentMapId).emit('playerDied', {
+            odId: currentPlayer.odId,
+            name: currentPlayer.name,
+            x: data.x,
+            y: data.y
+        });
+    });
+
+    /**
+     * Player respawn - broadcast to other players on map
+     */
+    socket.on('playerRespawn', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        console.log(`[Server] ${currentPlayer.name} respawned`);
+        
+        // Broadcast respawn to all other players on the map
+        socket.to(currentMapId).emit('playerRespawned', {
+            odId: currentPlayer.odId
+        });
     });
 
     /**
