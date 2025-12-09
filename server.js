@@ -422,7 +422,8 @@ function killMonster(mapId, monsterId) {
         y: monster.y,
         lootRecipient: topDamager, // Player who gets the loot
         drops: drops, // Server-generated drops
-        partyMembers: partyMembers // Party members who get shared EXP
+        partyMembers: partyMembers, // Party members who get shared EXP
+        isEliteMonster: monster.isEliteMonster || false // Elite status for client effects
     });
     
     // Clean up damage tracking
@@ -472,16 +473,58 @@ function generateMonsterDrops(mapId, monster, monsterId) {
     const baseY = monster.y + (monster.height || 40) / 2;
     let dropIndex = 0;
     
+    // ELITE MONSTER SPECIAL DROPS
+    if (monster.isEliteMonster) {
+        // Elite Gold (50k-100k)
+        const eliteGoldAmount = Math.floor(50000 + Math.random() * 50000);
+        drops.push({
+            name: 'Gold',
+            x: baseX - 40,
+            y: baseY,
+            amount: eliteGoldAmount,
+            velocityX: -2,
+            velocityY: -8
+        });
+        
+        // Guaranteed Gachapon Tickets (2-5)
+        const ticketCount = Math.floor(2 + Math.random() * 4);
+        for (let i = 0; i < ticketCount; i++) {
+            drops.push({
+                name: 'Gachapon Ticket',
+                x: baseX - 20 + (i * 15),
+                y: baseY,
+                velocityX: (Math.random() * 2) - 1,
+                velocityY: -7 - (Math.random() * 2)
+            });
+        }
+        
+        // Guaranteed Enhancement Scrolls (4-8)
+        const scrollCount = Math.floor(4 + Math.random() * 5);
+        for (let i = 0; i < scrollCount; i++) {
+            drops.push({
+                name: 'Enhancement Scroll',
+                x: baseX + 20 + (i * 15),
+                y: baseY,
+                velocityX: (Math.random() * 2) - 1,
+                velocityY: -7 - (Math.random() * 2)
+            });
+        }
+    }
+    
+    // Elite monsters have 3x drop rate for regular loot
+    const dropRateMultiplier = monster.isEliteMonster ? 3 : 1;
+    
     for (const loot of monsterTypeData.loot) {
         const roll = Math.random();
-        if (roll < (loot.rate || 0.1)) {
+        if (roll < ((loot.rate || 0.1) * dropRateMultiplier)) {
             // Generate consistent velocity for this drop
             const velocityX = (Math.random() * 4) - 2; // -2 to 2
             const velocityY = -7 - (Math.random() * 3); // -7 to -10 (upward)
             
             dropIndex++;
             if (loot.name === 'Gold') {
-                const goldAmount = Math.floor(Math.random() * ((loot.max || 10) - (loot.min || 1) + 1) + (loot.min || 1));
+                const baseGoldAmount = Math.floor(Math.random() * ((loot.max || 10) - (loot.min || 1) + 1) + (loot.min || 1));
+                const goldAmount = monster.isEliteMonster ? baseGoldAmount * 20 : baseGoldAmount;
                 drops.push({
                     name: 'Gold',
                     x: baseX + (dropIndex * 10),
