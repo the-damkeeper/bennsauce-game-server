@@ -71,8 +71,15 @@ const CONFIG = {
     MAX_PICKUPS_PER_SECOND: 20, // Maximum item pickups per second
     RATE_LIMIT_WINDOW: 1000, // Rate limit window in ms
     MAX_POSITION_UPDATES_PER_SECOND: 30, // Max position updates per second
-    MAX_TELEPORT_DISTANCE: 2000 // Max distance player can move in one update (pixels)
+    MAX_TELEPORT_DISTANCE: 2000, // Max distance player can move in one update (pixels)
+    
+    // GM Authentication - password is stored in environment variable
+    // Set GM_PASSWORD environment variable on Render/hosting platform
+    GM_PASSWORD: process.env.GM_PASSWORD || null
 };
+
+// Authorized GM sessions (socket IDs that have been authenticated)
+const authorizedGMs = new Set();
 
 // Rate limiting trackers
 // Structure: { odId: { attacks: [{timestamp}], pickups: [{timestamp}], positions: [{timestamp, x, y}] } }
@@ -1188,6 +1195,39 @@ io.on('connection', (socket) => {
     });
 
     /**
+     * GM Authentication - requires password set in GM_PASSWORD environment variable
+     * This keeps the password server-side only, not visible in client code
+     */
+    socket.on('gmAuth', (data) => {
+        const { password } = data;
+        
+        // Check if GM password is configured
+        if (!CONFIG.GM_PASSWORD) {
+            console.warn(`[Security] GM auth attempted but GM_PASSWORD not configured`);
+            socket.emit('gmAuthResult', { success: false, message: 'GM system not configured' });
+            return;
+        }
+        
+        // Validate password
+        if (password === CONFIG.GM_PASSWORD) {
+            authorizedGMs.add(socket.id);
+            console.log(`[Security] GM authorized: ${currentPlayer?.name || 'unknown'} (${socket.id})`);
+            socket.emit('gmAuthResult', { success: true, message: 'GM access granted' });
+        } else {
+            console.warn(`[Security] Failed GM auth attempt from ${currentPlayer?.name || 'unknown'} (${socket.id})`);
+            socket.emit('gmAuthResult', { success: false, message: 'Invalid password' });
+        }
+    });
+
+    /**
+     * Check if current socket is GM authorized
+     */
+    socket.on('checkGmAuth', () => {
+        const isAuthorized = authorizedGMs.has(socket.id);
+        socket.emit('gmAuthStatus', { authorized: isAuthorized });
+    });
+
+    /**
      * Player disconnects
      */
     socket.on('disconnect', () => {
@@ -1202,6 +1242,9 @@ io.on('connection', (socket) => {
             
             // Clean up rate limiter data
             cleanupRateLimiter(currentPlayer.odId);
+            
+            // Remove from GM authorized set
+            authorizedGMs.delete(socket.id);
 
             // Notify other players
             socket.to(currentMapId).emit('playerLeft', { odId: currentPlayer.odId });
