@@ -324,6 +324,12 @@ function updateMonsterAI(monster, mapId) {
         return;
     }
     
+    // Skip AI during knockback - monster shouldn't move while being knocked back
+    if (monster.knockbackEndTime && Date.now() < monster.knockbackEndTime) {
+        monster.velocityX = 0;
+        return;
+    }
+    
     const speedMultiplier = 4.2;
     const CHASE_TIMEOUT = 5000; // Stop chasing after 5 seconds of no interaction
     const CHASE_RANGE = 400; // How far monster can chase from spawn
@@ -507,9 +513,26 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
     // Calculate knockback (only for non-static monsters)
     let knockbackVelocityX = 0;
     if (monster.aiType !== 'static' && attackDirection !== undefined) {
-        // Knockback force: 3 units in the direction the player is facing
-        knockbackVelocityX = attackDirection * 3;
-        console.log(`[Server] Knockback calculated: monster ${monsterId}, aiType ${monster.aiType}, attackDirection ${attackDirection}, knockbackVelocityX ${knockbackVelocityX}`);
+        // Knockback force: 6 units in the direction the player is facing (matches client KNOCKBACK_FORCE)
+        const knockbackForce = 6;
+        knockbackVelocityX = attackDirection * knockbackForce;
+        
+        // Actually apply knockback displacement to server position
+        // Apply knockback over multiple frames worth (30 pixels = ~5 server ticks worth of knockback)
+        const knockbackDistance = knockbackForce * 5;
+        const newX = monster.x + (attackDirection * knockbackDistance);
+        
+        // Clamp to patrol bounds
+        if (monster.patrolMinX !== undefined && monster.patrolMaxX !== undefined) {
+            monster.x = Math.max(monster.patrolMinX, Math.min(monster.patrolMaxX, newX));
+        } else {
+            monster.x = newX;
+        }
+        
+        // Set knockback state to prevent AI from immediately moving back
+        monster.knockbackEndTime = Date.now() + 500; // 500ms knockback duration
+        
+        console.log(`[Server] Knockback applied: monster ${monsterId} moved to x=${monster.x}, knockbackVelocityX=${knockbackVelocityX}`);
     }
     
     // Broadcast damage to all players on map (use validated damage)
