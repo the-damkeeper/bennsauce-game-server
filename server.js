@@ -324,6 +324,61 @@ function updateMonsterAI(monster, mapId) {
         return;
     }
     
+    const speedMultiplier = 4.2;
+    const CHASE_TIMEOUT = 5000; // Stop chasing after 5 seconds of no interaction
+    const CHASE_RANGE = 400; // How far monster can chase from spawn
+    
+    // Check if monster should stop chasing (timeout or target lost)
+    if (monster.aiState === 'chasing') {
+        const now = Date.now();
+        const timeSinceInteraction = now - (monster.lastInteractionTime || 0);
+        
+        if (timeSinceInteraction > CHASE_TIMEOUT) {
+            // Lost aggro - return to patrol
+            monster.aiState = 'patrolling';
+            monster.targetPlayer = null;
+        } else if (monster.targetPlayer && maps[mapId]) {
+            // Chase the target player
+            const target = maps[mapId][monster.targetPlayer];
+            if (target) {
+                // Calculate direction to target
+                const targetX = target.x + 15; // Center of player (width ~30)
+                const dx = targetX - monster.x;
+                
+                // Only chase if within range
+                const distFromSpawn = Math.abs(monster.x - monster.spawnX);
+                if (distFromSpawn < CHASE_RANGE) {
+                    monster.direction = dx > 0 ? 1 : -1;
+                    monster.facing = monster.direction === 1 ? 'right' : 'left';
+                    
+                    // Move faster when chasing (1.5x patrol speed)
+                    const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 1.5;
+                    const moveAmount = monster.direction * chaseSpeed;
+                    const newX = monster.x + moveAmount;
+                    
+                    // Stay within patrol bounds
+                    if (newX >= monster.patrolMinX && newX <= monster.patrolMaxX) {
+                        monster.velocityX = moveAmount;
+                        monster.x = newX;
+                    } else {
+                        // Hit patrol boundary - stop but keep facing target
+                        monster.velocityX = 0;
+                    }
+                } else {
+                    // Too far from spawn - return to patrol
+                    monster.aiState = 'patrolling';
+                    monster.targetPlayer = null;
+                }
+            } else {
+                // Target no longer on map
+                monster.aiState = 'patrolling';
+                monster.targetPlayer = null;
+            }
+        }
+        monster.lastUpdate = Date.now();
+        return;
+    }
+    
     // Simple patrol behavior
     if (monster.aiState === 'patrolling' || monster.aiState === 'idle') {
         // Check if at patrol boundary BEFORE moving - turn around with 30px buffer
@@ -441,6 +496,13 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
     // Apply damage (use validated damage)
     monster.hp -= validatedDamage;
     monster.lastUpdate = Date.now();
+    
+    // Set monster to chase the attacker (aggro)
+    if (monster.aiType !== 'static') {
+        monster.aiState = 'chasing';
+        monster.targetPlayer = attackerId;
+        monster.lastInteractionTime = Date.now();
+    }
     
     // Calculate knockback (only for non-static monsters)
     let knockbackVelocityX = 0;
