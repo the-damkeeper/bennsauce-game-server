@@ -63,8 +63,73 @@ const CONFIG = {
     RESPAWN_TIME: 8000, // Regular monster respawn time (8 seconds)
     BOSS_RESPAWN_TIME: 300000, // Boss respawn time (5 minutes)
     MONSTER_SPEED: 0.8, // Base monster movement speed
-    PATROL_CHANGE_CHANCE: 0.02 // Chance to change direction per update
+    PATROL_CHANGE_CHANCE: 0.02, // Chance to change direction per update
+    
+    // Anti-cheat configuration
+    MAX_DAMAGE_PER_HIT: 50000, // Maximum reasonable damage per hit (high level + crits)
+    MAX_ATTACKS_PER_SECOND: 10, // Maximum attacks allowed per second
+    MAX_PICKUPS_PER_SECOND: 20, // Maximum item pickups per second
+    RATE_LIMIT_WINDOW: 1000, // Rate limit window in ms
+    MAX_POSITION_UPDATES_PER_SECOND: 30, // Max position updates per second
+    MAX_TELEPORT_DISTANCE: 2000 // Max distance player can move in one update (pixels)
 };
+
+// Rate limiting trackers
+// Structure: { odId: { attacks: [{timestamp}], pickups: [{timestamp}], positions: [{timestamp, x, y}] } }
+const rateLimiters = {};
+
+/**
+ * Check rate limit for an action
+ * @returns {boolean} true if action is allowed, false if rate limited
+ */
+function checkRateLimit(odId, action, limit) {
+    if (!rateLimiters[odId]) {
+        rateLimiters[odId] = { attacks: [], pickups: [], positions: [] };
+    }
+    
+    const now = Date.now();
+    const tracker = rateLimiters[odId][action];
+    
+    // Remove old entries outside the window
+    while (tracker.length > 0 && now - tracker[0].timestamp > CONFIG.RATE_LIMIT_WINDOW) {
+        tracker.shift();
+    }
+    
+    // Check if over limit
+    if (tracker.length >= limit) {
+        console.warn(`[Security] Rate limit exceeded for ${odId}: ${action} (${tracker.length}/${limit} per second)`);
+        return false;
+    }
+    
+    // Add new entry
+    tracker.push({ timestamp: now });
+    return true;
+}
+
+/**
+ * Validate damage value is reasonable
+ * @returns {number} Clamped damage value
+ */
+function validateDamage(damage, attackerId) {
+    if (typeof damage !== 'number' || isNaN(damage) || damage < 0) {
+        console.warn(`[Security] Invalid damage value from ${attackerId}: ${damage}`);
+        return 0;
+    }
+    
+    if (damage > CONFIG.MAX_DAMAGE_PER_HIT) {
+        console.warn(`[Security] Suspicious damage from ${attackerId}: ${damage} (capped to ${CONFIG.MAX_DAMAGE_PER_HIT})`);
+        return CONFIG.MAX_DAMAGE_PER_HIT;
+    }
+    
+    return Math.floor(damage);
+}
+
+/**
+ * Clean up rate limiter data for disconnected players
+ */
+function cleanupRateLimiter(odId) {
+    delete rateLimiters[odId];
+}
 
 // Map spawn definitions - will be received from clients
 // Structure: { mapId: { monsters: [{type, count}], spawners: [{type, maxCount}] } }
@@ -348,14 +413,25 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
     const monster = mapMonsters[mapId][monsterId];
     if (monster.isDead) return null;
     
+    // Anti-cheat: Rate limit attacks
+    if (!checkRateLimit(attackerId, 'attacks', CONFIG.MAX_ATTACKS_PER_SECOND)) {
+        return { rateLimited: true };
+    }
+    
+    // Anti-cheat: Validate and cap damage
+    const validatedDamage = validateDamage(damage, attackerId);
+    if (validatedDamage === 0) {
+        return null;
+    }
+    
     // Track damage for loot distribution
     if (!monsterDamage[monsterId]) {
         monsterDamage[monsterId] = {};
     }
-    monsterDamage[monsterId][attackerId] = (monsterDamage[monsterId][attackerId] || 0) + damage;
+    monsterDamage[monsterId][attackerId] = (monsterDamage[monsterId][attackerId] || 0) + validatedDamage;
     
-    // Apply damage
-    monster.hp -= damage;
+    // Apply damage (use validated damage)
+    monster.hp -= validatedDamage;
     monster.lastUpdate = Date.now();
     
     // Calculate knockback (only for non-static monsters)
@@ -366,10 +442,10 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
         console.log(`[Server] Knockback calculated: monster ${monsterId}, aiType ${monster.aiType}, attackDirection ${attackDirection}, knockbackVelocityX ${knockbackVelocityX}`);
     }
     
-    // Broadcast damage to all players on map
+    // Broadcast damage to all players on map (use validated damage)
     io.to(mapId).emit('monsterDamaged', {
         id: monsterId,
-        damage: damage,
+        damage: validatedDamage,
         currentHp: monster.hp,
         maxHp: monster.maxHp,
         attackerId: attackerId,
@@ -1123,6 +1199,9 @@ io.on('connection', (socket) => {
 
             // Remove socket mapping
             delete playerSockets[currentPlayer.odId];
+            
+            // Clean up rate limiter data
+            cleanupRateLimiter(currentPlayer.odId);
 
             // Notify other players
             socket.to(currentMapId).emit('playerLeft', { odId: currentPlayer.odId });
