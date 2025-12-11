@@ -418,8 +418,8 @@ function updateMonsterAI(monster, mapId) {
                     monster.direction = dx > 0 ? 1 : -1;
                     monster.facing = monster.direction === 1 ? 'right' : 'left';
                     
-                    // Move faster when chasing (1.5x patrol speed)
-                    const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 1.5;
+                    // Move MUCH faster when chasing (2.5x patrol speed) - aggressive pursuit!
+                    const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 2.5;
                     const moveAmount = monster.direction * chaseSpeed;
                     const newX = monster.x + moveAmount;
                     
@@ -434,10 +434,10 @@ function updateMonsterAI(monster, mapId) {
                     }
                     
                     // --- JUMPING WHILE CHASING ---
-                    // Jump if the player is above or randomly while chasing
+                    // Jump frequently when chasing - especially if player is above
                     if (monster.canJump && !monster.isJumping) {
                         const playerAbove = target.y < monster.y - 30;
-                        const jumpChance = playerAbove ? 0.03 : 0.015; // 3% if player above, 1.5% otherwise
+                        const jumpChance = playerAbove ? 0.12 : 0.05; // 12% if player above, 5% otherwise
                         if (Math.random() < jumpChance) {
                             monster.velocityY = monster.jumpForce || -8;
                             monster.isJumping = true;
@@ -498,7 +498,7 @@ function updateMonsterAI(monster, mapId) {
         
         // --- RANDOM JUMPING WHILE PATROLLING ---
         if (monster.canJump && !monster.isJumping) {
-            const jumpChance = monster.isMiniBoss ? 0.01 : 0.005; // Mini bosses jump more
+            const jumpChance = monster.isMiniBoss ? 0.04 : 0.02; // 4% for bosses, 2% for regular
             if (Math.random() < jumpChance) {
                 monster.velocityY = monster.jumpForce || -6;
                 monster.isJumping = true;
