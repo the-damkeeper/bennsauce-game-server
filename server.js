@@ -327,7 +327,8 @@ function updateAllMonsters() {
 }
 
 /**
- * Simple server-side monster AI
+ * Simple server-side monster AI - handles X movement only
+ * Client handles Y physics (gravity, jumping) locally
  */
 function updateMonsterAI(monster, mapId) {
     // Skip AI for static monsters (like test dummy)
@@ -336,85 +337,56 @@ function updateMonsterAI(monster, mapId) {
         return;
     }
     
-    // Skip AI during knockback - monster shouldn't move while being knocked back
+    // Skip AI during knockback
     if (monster.knockbackEndTime && Date.now() < monster.knockbackEndTime) {
         monster.velocityX = 0;
         return;
     }
     
     const speedMultiplier = 4.2;
-    const CHASE_TIMEOUT = 5000; // Stop chasing after 5 seconds of no interaction
-    const CHASE_RANGE = 500; // How far monster can chase from spawn
+    const CHASE_TIMEOUT = 5000;
+    const CHASE_RANGE = 500;
     const now = Date.now();
     
-    // NOTE: Monsters only aggro when attacked (see damageMonster function)
-    // No proximity aggro - players must initiate combat
+    // Monsters only aggro when attacked (set in damageMonster function)
+    // No proximity aggro
     
-    // NOTE: Server does NOT handle Y physics - client handles all gravity/jumping at 60fps
-    // Server only signals when monster should START a jump via jumpTriggered flag
-    
-    // Check if monster should stop chasing (timeout or target lost)
+    // Check if monster should stop chasing
     if (monster.aiState === 'chasing') {
         const timeSinceInteraction = now - (monster.lastInteractionTime || 0);
         
         if (timeSinceInteraction > CHASE_TIMEOUT) {
-            // Lost aggro - return to patrol
             monster.aiState = 'patrolling';
             monster.targetPlayer = null;
-            monster.chaseStartTime = 0;
         } else if (monster.targetPlayer && maps[mapId]) {
-            // Chase the target player
             const target = maps[mapId][monster.targetPlayer];
             if (target) {
-                // Calculate direction to target
-                const targetX = target.x + 15; // Center of player (width ~30)
+                const targetX = target.x + 15;
                 const dx = targetX - monster.x;
-                
-                // Only chase if within range from spawn
                 const distFromSpawn = Math.abs(monster.x - monster.spawnX);
+                
                 if (distFromSpawn < CHASE_RANGE) {
                     monster.direction = dx > 0 ? 1 : -1;
                     monster.facing = monster.direction === 1 ? 'right' : 'left';
                     
-                    // Move faster when chasing (1.5x patrol speed)
+                    // Chase speed (1.5x patrol)
                     const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 1.5;
                     const moveAmount = monster.direction * chaseSpeed;
                     const newX = monster.x + moveAmount;
                     
-                    // When chasing, allow falling off platforms - only respect map boundaries
-                    // This makes monsters more threatening as they pursue players
+                    // Respect map boundaries
                     if (newX >= 0 && newX <= monster.mapWidth - monster.width) {
                         monster.velocityX = moveAmount;
                         monster.x = newX;
                     } else {
-                        // Hit map boundary - stop but keep facing target
                         monster.velocityX = 0;
                     }
-                    
-                    // --- JUMPING WHILE CHASING ---
-                    // Server signals jump, client handles physics at 60fps
-                    // Cooldown prevents rapid-fire jump signals
-                    const jumpCooldown = 800; // 800ms between jumps
-                    const canJumpNow = monster.canJump && !monster.jumpTriggered && 
-                                       (now - (monster.lastJumpTime || 0)) > jumpCooldown;
-                    if (canJumpNow) {
-                        const playerAbove = target.y < monster.y - 30;
-                        const jumpChance = playerAbove ? 0.12 : 0.05; // 12% if player above, 5% otherwise
-                        if (Math.random() < jumpChance) {
-                            monster.jumpTriggered = true; // Client will apply jump physics
-                            monster.lastJumpTime = now;
-                        }
-                    }
                 } else {
-                    // Too far from spawn - return to patrol
                     monster.aiState = 'patrolling';
                     monster.targetPlayer = null;
-                    monster.chaseStartTime = 0;
                 }
             } else {
-                // Target no longer on map - look for new target
                 monster.targetPlayer = null;
-                // Don't immediately drop aggro, proximity check will find new target
             }
         }
         monster.lastUpdate = now;
@@ -423,7 +395,7 @@ function updateMonsterAI(monster, mapId) {
     
     // Simple patrol behavior
     if (monster.aiState === 'patrolling' || monster.aiState === 'idle') {
-        // Check if at patrol boundary BEFORE moving - turn around with 30px buffer
+        // Turn at patrol boundaries
         if (monster.x <= monster.patrolMinX + 30) {
             monster.direction = 1;
             monster.facing = 'right';
@@ -431,21 +403,18 @@ function updateMonsterAI(monster, mapId) {
             monster.direction = -1;
             monster.facing = 'left';
         } else if (Math.random() < CONFIG.PATROL_CHANGE_CHANCE) {
-            // Random chance to change direction (only if not at boundary)
             monster.direction *= -1;
             monster.facing = monster.direction === 1 ? 'right' : 'left';
         }
         
-        // Move in current direction
+        // Move
         const moveAmount = monster.direction * (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier;
         const newX = monster.x + moveAmount;
         
-        // Only move if staying within patrol bounds
         if (newX >= monster.patrolMinX && newX <= monster.patrolMaxX) {
             monster.velocityX = moveAmount;
             monster.x = newX;
         } else {
-            // Hit boundary - stop and turn around
             monster.velocityX = 0;
             if (newX < monster.patrolMinX) {
                 monster.x = monster.patrolMinX;
@@ -458,21 +427,7 @@ function updateMonsterAI(monster, mapId) {
             }
         }
         
-        // --- RANDOM JUMPING WHILE PATROLLING ---
-        // Server signals jump, client handles physics at 60fps
-        // Cooldown prevents rapid-fire jump signals
-        const jumpCooldown = 1000; // 1 second between jumps while patrolling
-        const canJumpNow = monster.canJump && !monster.jumpTriggered && 
-                           (now - (monster.lastJumpTime || 0)) > jumpCooldown;
-        if (canJumpNow) {
-            const jumpChance = monster.isMiniBoss ? 0.04 : 0.02; // 4% for bosses, 2% for regular
-            if (Math.random() < jumpChance) {
-                monster.jumpTriggered = true; // Client will apply jump physics
-                monster.lastJumpTime = now;
-            }
-        }
-        
-        // Clamp to map boundaries as safety net
+        // Clamp to map
         if (monster.x < 0) {
             monster.x = 0;
             monster.direction = 1;
@@ -492,10 +447,10 @@ function updateMonsterAI(monster, mapId) {
 
 /**
  * Broadcast monster positions to all players
+ * Server only sends X position/direction - client handles Y physics locally
  */
 function broadcastMonsterPositions() {
     for (const mapId in mapMonsters) {
-        // Skip if no players on this map
         if (!maps[mapId] || Object.keys(maps[mapId]).length === 0) continue;
         
         const monsterPositions = [];
@@ -509,14 +464,8 @@ function broadcastMonsterPositions() {
                 facing: m.facing,
                 direction: m.direction,
                 aiState: m.aiState,
-                velocityX: m.velocityX || 0,
-                jumpTriggered: m.jumpTriggered || false // Client handles actual jump physics
+                velocityX: m.velocityX || 0
             });
-            
-            // Clear jump trigger after sending (one-shot signal)
-            if (m.jumpTriggered) {
-                m.jumpTriggered = false;
-            }
         }
         
         if (monsterPositions.length > 0) {
