@@ -598,6 +598,18 @@ function killMonster(mapId, monsterId) {
     // Clean up damage tracking
     delete monsterDamage[monsterId];
     
+    // Skip respawn for Party Quest maps - monsters should not respawn
+    if (mapId.startsWith('pq')) {
+        console.log(`[Server] PQ map ${mapId} - skipping respawn for ${monster.type}`);
+        // Remove monster immediately (no respawn timer)
+        setTimeout(() => {
+            if (mapMonsters[mapId] && mapMonsters[mapId][monsterId]) {
+                delete mapMonsters[mapId][monsterId];
+            }
+        }, 1000); // Short delay to let death animation play
+        return { monster, killed: true, lootRecipient: topDamager };
+    }
+    
     // Schedule respawn (keep monster data for animation timing)
     const respawnTime = monster.isMiniBoss ? CONFIG.BOSS_RESPAWN_TIME : CONFIG.RESPAWN_TIME;
     
