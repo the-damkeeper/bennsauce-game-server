@@ -222,6 +222,7 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         aiState: aiType === 'static' ? 'idle' : 'patrolling',
         aiType: aiType,
         velocityX: 0,
+        velocityY: 0,
         speed: speed,
         isDead: false,
         isMiniBoss: monsterTypeData.isMiniBoss || false,
@@ -241,7 +242,14 @@ function spawnMonster(mapId, type, spawnerData = {}) {
         patrolSurfaceWidth: spawnerData.surfaceWidth,
         // Elite monster properties (set when transformed)
         originalMaxHp: null,
-        originalDamage: null
+        originalDamage: null,
+        // Jumping properties
+        canJump: monsterTypeData.canJump || false,
+        jumpForce: monsterTypeData.jumpForce || -8,
+        isJumping: false,
+        // Aggro detection
+        aggroRange: monsterTypeData.isMiniBoss ? 350 : 250, // Detection range for aggro
+        chaseStartTime: 0
     };
     
     // Calculate patrol bounds based on platform/structure bounds if provided, otherwise use spawn position
@@ -332,17 +340,60 @@ function updateMonsterAI(monster, mapId) {
     
     const speedMultiplier = 4.2;
     const CHASE_TIMEOUT = 5000; // Stop chasing after 5 seconds of no interaction
-    const CHASE_RANGE = 400; // How far monster can chase from spawn
+    const CHASE_RANGE = 500; // How far monster can chase from spawn
+    const now = Date.now();
+    
+    // --- PROXIMITY AGGRO DETECTION ---
+    // Check for nearby players to aggro (if not already chasing)
+    if (monster.aiState !== 'chasing' && maps[mapId]) {
+        const playersOnMap = Object.values(maps[mapId]);
+        let closestPlayer = null;
+        let closestDist = monster.aggroRange || 250;
+        
+        for (const p of playersOnMap) {
+            if (!p || p.isDead) continue;
+            const dx = (p.x + 15) - (monster.x + monster.width / 2);
+            const dy = (p.y + 30) - (monster.y + monster.height / 2);
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist < closestDist) {
+                closestDist = dist;
+                closestPlayer = p;
+            }
+        }
+        
+        if (closestPlayer) {
+            // Found a nearby player - aggro!
+            monster.aiState = 'chasing';
+            monster.targetPlayer = closestPlayer.odId;
+            monster.lastInteractionTime = now;
+            monster.chaseStartTime = now;
+        }
+    }
+    
+    // --- JUMPING PHYSICS ---
+    if (monster.isJumping) {
+        // Apply gravity
+        monster.velocityY = (monster.velocityY || 0) + 0.6; // Gravity
+        monster.y += monster.velocityY;
+        
+        // Check if landed (back to ground level)
+        if (monster.y >= monster.spawnY) {
+            monster.y = monster.spawnY;
+            monster.velocityY = 0;
+            monster.isJumping = false;
+        }
+    }
     
     // Check if monster should stop chasing (timeout or target lost)
     if (monster.aiState === 'chasing') {
-        const now = Date.now();
         const timeSinceInteraction = now - (monster.lastInteractionTime || 0);
         
         if (timeSinceInteraction > CHASE_TIMEOUT) {
             // Lost aggro - return to patrol
             monster.aiState = 'patrolling';
             monster.targetPlayer = null;
+            monster.chaseStartTime = 0;
         } else if (monster.targetPlayer && maps[mapId]) {
             // Chase the target player
             const target = maps[mapId][monster.targetPlayer];
@@ -351,7 +402,7 @@ function updateMonsterAI(monster, mapId) {
                 const targetX = target.x + 15; // Center of player (width ~30)
                 const dx = targetX - monster.x;
                 
-                // Only chase if within range
+                // Only chase if within range from spawn
                 const distFromSpawn = Math.abs(monster.x - monster.spawnX);
                 if (distFromSpawn < CHASE_RANGE) {
                     monster.direction = dx > 0 ? 1 : -1;
@@ -370,18 +421,30 @@ function updateMonsterAI(monster, mapId) {
                         // Hit patrol boundary - stop but keep facing target
                         monster.velocityX = 0;
                     }
+                    
+                    // --- JUMPING WHILE CHASING ---
+                    // Jump if the player is above or randomly while chasing
+                    if (monster.canJump && !monster.isJumping) {
+                        const playerAbove = target.y < monster.y - 30;
+                        const jumpChance = playerAbove ? 0.03 : 0.015; // 3% if player above, 1.5% otherwise
+                        if (Math.random() < jumpChance) {
+                            monster.velocityY = monster.jumpForce || -8;
+                            monster.isJumping = true;
+                        }
+                    }
                 } else {
                     // Too far from spawn - return to patrol
                     monster.aiState = 'patrolling';
                     monster.targetPlayer = null;
+                    monster.chaseStartTime = 0;
                 }
             } else {
-                // Target no longer on map
-                monster.aiState = 'patrolling';
+                // Target no longer on map - look for new target
                 monster.targetPlayer = null;
+                // Don't immediately drop aggro, proximity check will find new target
             }
         }
-        monster.lastUpdate = Date.now();
+        monster.lastUpdate = now;
         return;
     }
     
@@ -401,9 +464,6 @@ function updateMonsterAI(monster, mapId) {
         }
         
         // Move in current direction
-        // Speed adjustment: local game runs ~60fps with 0.7 multiplier during patrol
-        // Server runs 10 updates/sec, so we multiply by 6 to get ~4.2 which approximates 60fps * 0.7 / 10
-        const speedMultiplier = 4.2;
         const moveAmount = monster.direction * (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier;
         const newX = monster.x + moveAmount;
         
@@ -425,6 +485,15 @@ function updateMonsterAI(monster, mapId) {
             }
         }
         
+        // --- RANDOM JUMPING WHILE PATROLLING ---
+        if (monster.canJump && !monster.isJumping) {
+            const jumpChance = monster.isMiniBoss ? 0.01 : 0.005; // Mini bosses jump more
+            if (Math.random() < jumpChance) {
+                monster.velocityY = monster.jumpForce || -6;
+                monster.isJumping = true;
+            }
+        }
+        
         // Clamp to map boundaries as safety net
         if (monster.x < 0) {
             monster.x = 0;
@@ -440,7 +509,7 @@ function updateMonsterAI(monster, mapId) {
         monster.aiState = 'patrolling';
     }
     
-    monster.lastUpdate = Date.now();
+    monster.lastUpdate = now;
 }
 
 /**
@@ -463,7 +532,9 @@ function broadcastMonsterPositions() {
                 facing: m.facing,
                 direction: m.direction,
                 aiState: m.aiState,
-                velocityX: m.velocityX || 0
+                velocityX: m.velocityX || 0,
+                velocityY: m.velocityY || 0,
+                isJumping: m.isJumping || false
             });
         }
         
