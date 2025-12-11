@@ -1211,6 +1211,27 @@ io.on('connection', (socket) => {
     });
 
     /**
+     * Broadcast projectile event to other players on the same map
+     * Projectiles are visual-only for remote players (damage is calculated locally)
+     */
+    socket.on('playerProjectile', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        // Relay projectile to other players on the map
+        socket.to(currentMapId).emit('remoteProjectile', {
+            odId: currentPlayer.odId,
+            spriteName: data.spriteName,
+            x: data.x,
+            y: data.y,
+            velocityX: data.velocityX,
+            velocityY: data.velocityY,
+            angle: data.angle || 0,
+            isGrenade: data.isGrenade || false,
+            isHoming: data.isHoming || false
+        });
+    });
+
+    /**
      * Request current monsters on map (for late joiners)
      */
     socket.on('requestMonsters', () => {
