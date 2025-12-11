@@ -857,6 +857,100 @@ io.on('connection', (socket) => {
     });
 
     /**
+     * Player rejoins with a different character (character switch)
+     * This cleans up the old character and joins with new character data
+     */
+    socket.on('rejoin', (data) => {
+        const { odId, name, mapId, x, y, customization, level, playerClass, guild, equipped, cosmeticEquipped, equippedMedal, displayMedals, partyId, oldOdId } = data;
+        
+        console.log(`[Server] Player switching character: ${oldOdId || 'unknown'} -> ${name} (${odId})`);
+        
+        if (!odId || !name || !mapId) {
+            socket.emit('error', { message: 'Invalid rejoin data' });
+            return;
+        }
+
+        // Clean up old character data if it exists
+        if (currentPlayer && currentMapId) {
+            // Remove old player from their map
+            if (maps[currentMapId] && maps[currentMapId][currentPlayer.odId]) {
+                delete maps[currentMapId][currentPlayer.odId];
+            }
+            // Also check for old odId explicitly
+            if (oldOdId && maps[currentMapId] && maps[currentMapId][oldOdId]) {
+                delete maps[currentMapId][oldOdId];
+            }
+            
+            // Notify others that old character left
+            socket.to(currentMapId).emit('playerLeft', { odId: currentPlayer.odId });
+            if (oldOdId && oldOdId !== currentPlayer.odId) {
+                socket.to(currentMapId).emit('playerLeft', { odId: oldOdId });
+            }
+            
+            // Remove old socket mapping
+            delete playerSockets[currentPlayer.odId];
+            if (oldOdId) delete playerSockets[oldOdId];
+            
+            // Leave old map room
+            socket.leave(currentMapId);
+            
+            console.log(`[Server] Cleaned up old character: ${currentPlayer.name}`);
+        }
+
+        // Store new player data
+        currentPlayer = {
+            odId,
+            name,
+            x: x || 400,
+            y: y || 300,
+            mapId,
+            facing: 'right',
+            animationState: 'idle',
+            customization: customization || {},
+            level: level || 1,
+            playerClass: playerClass || 'beginner',
+            guild: guild || null,
+            equipped: equipped || {},
+            cosmeticEquipped: cosmeticEquipped || {},
+            equippedMedal: equippedMedal || null,
+            displayMedals: displayMedals || [],
+            partyId: partyId || null,
+            lastUpdate: Date.now(),
+            socketId: socket.id
+        };
+        currentMapId = mapId;
+
+        // Track socket -> player mapping
+        playerSockets[odId] = socket.id;
+
+        // Initialize map if needed
+        if (!maps[mapId]) {
+            maps[mapId] = {};
+        }
+
+        // Add player to map
+        maps[mapId][odId] = currentPlayer;
+
+        // Join the map's socket room
+        socket.join(mapId);
+
+        // Send current players on this map to the new player
+        const otherPlayers = Object.values(maps[mapId]).filter(p => p.odId !== odId);
+        socket.emit('currentPlayers', otherPlayers);
+
+        // Send existing monsters on this map
+        if (mapMonsters[mapId] && Object.keys(mapMonsters[mapId]).length > 0) {
+            const existingMonsters = getMapMonsters(mapId);
+            socket.emit('currentMonsters', existingMonsters);
+        }
+
+        // Notify other players on this map about the new player
+        socket.to(mapId).emit('playerJoined', currentPlayer);
+
+        console.log(`[Server] ${name} rejoined on map ${mapId} (${Object.keys(maps[mapId]).length} players on map)`);
+    });
+
+    /**
      * Player position/state update
      */
     socket.on('updatePosition', (data) => {
@@ -1217,9 +1311,12 @@ io.on('connection', (socket) => {
     socket.on('playerProjectile', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
+        console.log(`[Server] Relaying projectile from ${currentPlayer.odId}, id: ${data.projectileId}`);
+        
         // Relay projectile to other players on the map
         socket.to(currentMapId).emit('remoteProjectile', {
             odId: currentPlayer.odId,
+            projectileId: data.projectileId,
             spriteName: data.spriteName,
             x: data.x,
             y: data.y,
@@ -1228,6 +1325,44 @@ io.on('connection', (socket) => {
             angle: data.angle || 0,
             isGrenade: data.isGrenade || false,
             isHoming: data.isHoming || false
+        });
+    });
+
+    /**
+     * Broadcast projectile hit event to other players on the same map
+     * This tells remote clients to stop/remove a projectile when it hits a target
+     */
+    socket.on('playerProjectileHit', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        console.log(`[Server] Relaying projectile HIT from ${currentPlayer.odId}, id: ${data.projectileId}`);
+        
+        // Relay projectile hit to other players on the map
+        socket.to(currentMapId).emit('remoteProjectileHit', {
+            odId: currentPlayer.odId,
+            projectileId: data.projectileId,
+            x: data.x,
+            y: data.y
+        });
+    });
+
+    /**
+     * Broadcast skill VFX event to other players on the same map
+     * Skill VFX are visual-only for remote players (melee slashes, spell effects, etc.)
+     */
+    socket.on('playerSkillVFX', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        // Relay skill VFX to other players on the map
+        socket.to(currentMapId).emit('remoteSkillVFX', {
+            odId: currentPlayer.odId,
+            effectName: data.effectName,
+            x: data.x,
+            y: data.y,
+            width: data.width || 150,
+            height: data.height || 150,
+            facing: data.facing || 'right',
+            duration: data.duration || 300
         });
     });
 
@@ -1344,6 +1479,105 @@ io.on('connection', (socket) => {
     socket.on('checkGmAuth', () => {
         const isAuthorized = authorizedGMs.has(socket.id);
         socket.emit('gmAuthStatus', { authorized: isAuthorized });
+    });
+
+    // ==========================================
+    // PARTY QUEST SOCKET EVENTS
+    // ==========================================
+    
+    // Store active party quests
+    // Structure: { pqId_partyId: { pqId, partyId, members: [odId], currentStage, startTime, stageProgress } }
+    
+    /**
+     * Start a party quest - transports all party members to the PQ Stage 1
+     */
+    socket.on('startPartyQuest', (data) => {
+        const { pqId, partyId, leaderId, originalMap, originalX, originalY } = data;
+        
+        if (!currentPlayer || currentPlayer.odId !== leaderId) {
+            socket.emit('pqError', { message: 'Only the party leader can start the party quest.' });
+            return;
+        }
+        
+        console.log(`[PQ] Starting Party Quest ${pqId} for party ${partyId}`);
+        
+        // Notify all players in the same party to warp to PQ Stage 1 (not lobby)
+        io.emit('partyQuestStarted', {
+            pqId,
+            partyId,
+            leaderId,
+            targetMap: 'pqStage1',
+            targetX: 200,
+            targetY: 300,
+            originalMap: originalMap || 'onyxCity',
+            originalX: originalX || 600,
+            originalY: originalY || 300
+        });
+    });
+    
+    /**
+     * Player completes a PQ stage objective
+     */
+    socket.on('pqStageComplete', (data) => {
+        const { pqId, partyId, stage } = data;
+        
+        console.log(`[PQ] Stage ${stage} completed for PQ ${pqId}, party ${partyId}`);
+        
+        // Determine next stage map
+        const stageProgression = {
+            1: { nextMap: 'pqStage2', nextX: 200, nextY: 300 },
+            2: { nextMap: 'pqStage3', nextX: 200, nextY: 300 },
+            3: { nextMap: 'pqStage4', nextX: 200, nextY: 300 },
+            4: { nextMap: 'pqBoss', nextX: 200, nextY: 300 },
+            5: { nextMap: 'pqReward', nextX: 500, nextY: 300 } // Boss stage
+        };
+        
+        const nextStageInfo = stageProgression[stage];
+        
+        // Notify all party members that stage is complete
+        io.emit('pqStageCleared', {
+            pqId,
+            partyId,
+            stage,
+            clearedBy: currentPlayer?.name || 'Unknown',
+            nextMap: nextStageInfo?.nextMap,
+            nextX: nextStageInfo?.nextX,
+            nextY: nextStageInfo?.nextY,
+            countdownSeconds: 10
+        });
+    });
+    
+    /**
+     * Party Quest completed (boss defeated)
+     */
+    socket.on('pqCompleted', (data) => {
+        const { pqId, partyId } = data;
+        
+        console.log(`[PQ] Party Quest ${pqId} completed by party ${partyId}`);
+        
+        // Notify all party members
+        io.emit('partyQuestCompleted', {
+            pqId,
+            partyId,
+            completedBy: currentPlayer?.name || 'Unknown'
+        });
+    });
+    
+    /**
+     * Player leaves the party quest
+     */
+    socket.on('leavePQ', (data) => {
+        const { pqId, partyId } = data;
+        
+        console.log(`[PQ] ${currentPlayer?.name || 'Unknown'} left PQ ${pqId}`);
+        
+        // Notify party members
+        io.emit('pqMemberLeft', {
+            pqId,
+            partyId,
+            playerName: currentPlayer?.name || 'Unknown',
+            playerId: currentPlayer?.odId
+        });
     });
 
     /**
