@@ -376,13 +376,15 @@ function updateMonsterAI(monster, mapId) {
     }
     
     // --- GRAVITY & JUMPING PHYSICS ---
-    // Apply gravity when jumping OR when falling (y position is above ground)
+    // Server runs at 10fps, client at 60fps. Scale physics accordingly.
+    // Client GRAVITY = 0.4 at 60fps, so server needs ~0.4 * 6 = 2.4 per tick
+    const SERVER_GRAVITY = 2.4;
     const groundLevel = monster.groundY - monster.height - 3; // Where the monster should land
     const isAboveGround = monster.y < groundLevel - 5; // Some threshold
     
     if (monster.isJumping || monster.isFalling || isAboveGround) {
-        // Apply gravity
-        monster.velocityY = (monster.velocityY || 0) + 0.6; // Gravity
+        // Apply scaled gravity for server tick rate
+        monster.velocityY = (monster.velocityY || 0) + SERVER_GRAVITY;
         monster.y += monster.velocityY;
         
         // Mark as falling if not jumping but above ground
@@ -439,11 +441,14 @@ function updateMonsterAI(monster, mapId) {
                     
                     // --- JUMPING WHILE CHASING ---
                     // Jump frequently when chasing - especially if player is above
-                    if (monster.canJump && !monster.isJumping) {
+                    if (monster.canJump && !monster.isJumping && !monster.isFalling) {
                         const playerAbove = target.y < monster.y - 30;
                         const jumpChance = playerAbove ? 0.12 : 0.05; // 12% if player above, 5% otherwise
                         if (Math.random() < jumpChance) {
-                            monster.velocityY = monster.jumpForce || -8;
+                            // Scale jump force for server tick rate (10fps vs 60fps)
+                            // Jump forces are ~2.5x to match client physics feel
+                            const baseJump = monster.jumpForce || -8;
+                            monster.velocityY = baseJump * 2.5;
                             monster.isJumping = true;
                         }
                     }
@@ -501,10 +506,12 @@ function updateMonsterAI(monster, mapId) {
         }
         
         // --- RANDOM JUMPING WHILE PATROLLING ---
-        if (monster.canJump && !monster.isJumping) {
+        if (monster.canJump && !monster.isJumping && !monster.isFalling) {
             const jumpChance = monster.isMiniBoss ? 0.04 : 0.02; // 4% for bosses, 2% for regular
             if (Math.random() < jumpChance) {
-                monster.velocityY = monster.jumpForce || -6;
+                // Scale jump force for server tick rate (10fps vs 60fps)
+                const baseJump = monster.jumpForce || -6;
+                monster.velocityY = baseJump * 2.5;
                 monster.isJumping = true;
             }
         }
