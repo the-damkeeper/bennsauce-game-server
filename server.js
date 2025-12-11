@@ -358,6 +358,11 @@ function updateMonsterAI(monster, mapId) {
         if (timeSinceInteraction > CHASE_TIMEOUT) {
             monster.aiState = 'patrolling';
             monster.targetPlayer = null;
+            // Update patrol bounds to current position so monster doesn't snap back
+            const patrolRadius = (monster.patrolMaxX - monster.patrolMinX) / 2;
+            monster.patrolMinX = Math.max(0, monster.x - patrolRadius);
+            monster.patrolMaxX = Math.min(monster.mapWidth - monster.width, monster.x + patrolRadius);
+            monster.spawnX = monster.x; // Update spawn point too
         } else if (monster.targetPlayer && maps[mapId]) {
             const target = maps[mapId][monster.targetPlayer];
             if (target) {
@@ -382,8 +387,14 @@ function updateMonsterAI(monster, mapId) {
                         monster.velocityX = 0;
                     }
                 } else {
+                    // Too far from spawn - stop chasing but stay at current position
                     monster.aiState = 'patrolling';
                     monster.targetPlayer = null;
+                    // Update patrol bounds to current position
+                    const patrolRadius = 100;
+                    monster.patrolMinX = Math.max(0, monster.x - patrolRadius);
+                    monster.patrolMaxX = Math.min(monster.mapWidth - monster.width, monster.x + patrolRadius);
+                    monster.spawnX = monster.x;
                 }
             } else {
                 monster.targetPlayer = null;
