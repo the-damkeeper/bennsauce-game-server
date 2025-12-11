@@ -371,17 +371,27 @@ function updateMonsterAI(monster, mapId) {
         }
     }
     
-    // --- JUMPING PHYSICS ---
-    if (monster.isJumping) {
+    // --- GRAVITY & JUMPING PHYSICS ---
+    // Apply gravity when jumping OR when falling (y position is above ground)
+    const groundLevel = monster.groundY - monster.height - 3; // Where the monster should land
+    const isAboveGround = monster.y < groundLevel - 5; // Some threshold
+    
+    if (monster.isJumping || monster.isFalling || isAboveGround) {
         // Apply gravity
         monster.velocityY = (monster.velocityY || 0) + 0.6; // Gravity
         monster.y += monster.velocityY;
         
-        // Check if landed (back to ground level)
-        if (monster.y >= monster.spawnY) {
-            monster.y = monster.spawnY;
+        // Mark as falling if not jumping but above ground
+        if (!monster.isJumping && isAboveGround) {
+            monster.isFalling = true;
+        }
+        
+        // Check if landed (hit ground level)
+        if (monster.y >= groundLevel) {
+            monster.y = groundLevel;
             monster.velocityY = 0;
             monster.isJumping = false;
+            monster.isFalling = false;
         }
     }
     
@@ -413,12 +423,13 @@ function updateMonsterAI(monster, mapId) {
                     const moveAmount = monster.direction * chaseSpeed;
                     const newX = monster.x + moveAmount;
                     
-                    // Stay within patrol bounds
-                    if (newX >= monster.patrolMinX && newX <= monster.patrolMaxX) {
+                    // When chasing, allow falling off platforms - only respect map boundaries
+                    // This makes monsters more threatening as they pursue players
+                    if (newX >= 0 && newX <= monster.mapWidth - monster.width) {
                         monster.velocityX = moveAmount;
                         monster.x = newX;
                     } else {
-                        // Hit patrol boundary - stop but keep facing target
+                        // Hit map boundary - stop but keep facing target
                         monster.velocityX = 0;
                     }
                     
@@ -534,7 +545,8 @@ function broadcastMonsterPositions() {
                 aiState: m.aiState,
                 velocityX: m.velocityX || 0,
                 velocityY: m.velocityY || 0,
-                isJumping: m.isJumping || false
+                isJumping: m.isJumping || false,
+                isFalling: m.isFalling || false
             });
         }
         
