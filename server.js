@@ -347,33 +347,8 @@ function updateMonsterAI(monster, mapId) {
     const CHASE_RANGE = 500; // How far monster can chase from spawn
     const now = Date.now();
     
-    // --- PROXIMITY AGGRO DETECTION ---
-    // Check for nearby players to aggro (if not already chasing)
-    if (monster.aiState !== 'chasing' && maps[mapId]) {
-        const playersOnMap = Object.values(maps[mapId]);
-        let closestPlayer = null;
-        let closestDist = monster.aggroRange || 250;
-        
-        for (const p of playersOnMap) {
-            if (!p || p.isDead) continue;
-            const dx = (p.x + 15) - (monster.x + monster.width / 2);
-            const dy = (p.y + 30) - (monster.y + monster.height / 2);
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            
-            if (dist < closestDist) {
-                closestDist = dist;
-                closestPlayer = p;
-            }
-        }
-        
-        if (closestPlayer) {
-            // Found a nearby player - aggro!
-            monster.aiState = 'chasing';
-            monster.targetPlayer = closestPlayer.odId;
-            monster.lastInteractionTime = now;
-            monster.chaseStartTime = now;
-        }
-    }
+    // NOTE: Monsters only aggro when attacked (see damageMonster function)
+    // No proximity aggro - players must initiate combat
     
     // NOTE: Server does NOT handle Y physics - client handles all gravity/jumping at 60fps
     // Server only signals when monster should START a jump via jumpTriggered flag
@@ -401,8 +376,8 @@ function updateMonsterAI(monster, mapId) {
                     monster.direction = dx > 0 ? 1 : -1;
                     monster.facing = monster.direction === 1 ? 'right' : 'left';
                     
-                    // Move MUCH faster when chasing (2.5x patrol speed) - aggressive pursuit!
-                    const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 2.5;
+                    // Move faster when chasing (1.5x patrol speed)
+                    const chaseSpeed = (monster.speed || CONFIG.MONSTER_SPEED) * speedMultiplier * 1.5;
                     const moveAmount = monster.direction * chaseSpeed;
                     const newX = monster.x + moveAmount;
                     
