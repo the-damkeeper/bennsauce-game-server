@@ -375,31 +375,8 @@ function updateMonsterAI(monster, mapId) {
         }
     }
     
-    // --- GRAVITY & JUMPING PHYSICS ---
-    // Server runs at 10fps, client at 60fps. Scale physics accordingly.
-    // Client GRAVITY = 0.4 at 60fps, so server needs ~0.4 * 6 = 2.4 per tick
-    const SERVER_GRAVITY = 2.4;
-    const groundLevel = monster.groundY - monster.height - 3; // Where the monster should land
-    const isAboveGround = monster.y < groundLevel - 5; // Some threshold
-    
-    if (monster.isJumping || monster.isFalling || isAboveGround) {
-        // Apply scaled gravity for server tick rate
-        monster.velocityY = (monster.velocityY || 0) + SERVER_GRAVITY;
-        monster.y += monster.velocityY;
-        
-        // Mark as falling if not jumping but above ground
-        if (!monster.isJumping && isAboveGround) {
-            monster.isFalling = true;
-        }
-        
-        // Check if landed (hit ground level)
-        if (monster.y >= groundLevel) {
-            monster.y = groundLevel;
-            monster.velocityY = 0;
-            monster.isJumping = false;
-            monster.isFalling = false;
-        }
-    }
+    // NOTE: Server does NOT handle Y physics - client handles all gravity/jumping at 60fps
+    // Server only signals when monster should START a jump via jumpTriggered flag
     
     // Check if monster should stop chasing (timeout or target lost)
     if (monster.aiState === 'chasing') {
@@ -440,16 +417,17 @@ function updateMonsterAI(monster, mapId) {
                     }
                     
                     // --- JUMPING WHILE CHASING ---
-                    // Jump frequently when chasing - especially if player is above
-                    if (monster.canJump && !monster.isJumping && !monster.isFalling) {
+                    // Server signals jump, client handles physics at 60fps
+                    // Cooldown prevents rapid-fire jump signals
+                    const jumpCooldown = 800; // 800ms between jumps
+                    const canJumpNow = monster.canJump && !monster.jumpTriggered && 
+                                       (now - (monster.lastJumpTime || 0)) > jumpCooldown;
+                    if (canJumpNow) {
                         const playerAbove = target.y < monster.y - 30;
                         const jumpChance = playerAbove ? 0.12 : 0.05; // 12% if player above, 5% otherwise
                         if (Math.random() < jumpChance) {
-                            // Scale jump force for server tick rate (10fps vs 60fps)
-                            // Jump forces are ~2.5x to match client physics feel
-                            const baseJump = monster.jumpForce || -8;
-                            monster.velocityY = baseJump * 2.5;
-                            monster.isJumping = true;
+                            monster.jumpTriggered = true; // Client will apply jump physics
+                            monster.lastJumpTime = now;
                         }
                     }
                 } else {
@@ -506,13 +484,16 @@ function updateMonsterAI(monster, mapId) {
         }
         
         // --- RANDOM JUMPING WHILE PATROLLING ---
-        if (monster.canJump && !monster.isJumping && !monster.isFalling) {
+        // Server signals jump, client handles physics at 60fps
+        // Cooldown prevents rapid-fire jump signals
+        const jumpCooldown = 1000; // 1 second between jumps while patrolling
+        const canJumpNow = monster.canJump && !monster.jumpTriggered && 
+                           (now - (monster.lastJumpTime || 0)) > jumpCooldown;
+        if (canJumpNow) {
             const jumpChance = monster.isMiniBoss ? 0.04 : 0.02; // 4% for bosses, 2% for regular
             if (Math.random() < jumpChance) {
-                // Scale jump force for server tick rate (10fps vs 60fps)
-                const baseJump = monster.jumpForce || -6;
-                monster.velocityY = baseJump * 2.5;
-                monster.isJumping = true;
+                monster.jumpTriggered = true; // Client will apply jump physics
+                monster.lastJumpTime = now;
             }
         }
         
@@ -550,15 +531,17 @@ function broadcastMonsterPositions() {
             monsterPositions.push({
                 id: m.id,
                 x: m.x,
-                y: m.y,
                 facing: m.facing,
                 direction: m.direction,
                 aiState: m.aiState,
                 velocityX: m.velocityX || 0,
-                velocityY: m.velocityY || 0,
-                isJumping: m.isJumping || false,
-                isFalling: m.isFalling || false
+                jumpTriggered: m.jumpTriggered || false // Client handles actual jump physics
             });
+            
+            // Clear jump trigger after sending (one-shot signal)
+            if (m.jumpTriggered) {
+                m.jumpTriggered = false;
+            }
         }
         
         if (monsterPositions.length > 0) {
