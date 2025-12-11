@@ -194,6 +194,10 @@ function spawnMonster(mapId, type, spawnerData = {}) {
     
     // Get monster type data from stored data
     const monsterTypeData = mapSpawnData[mapId]?.monsterTypes?.[type] || {};
+    
+    // DEBUG: Log monster type data to verify canJump is being received
+    console.log(`[Server] Spawning ${type} - canJump: ${monsterTypeData.canJump}, jumpForce: ${monsterTypeData.jumpForce}, monsterTypeData keys:`, Object.keys(monsterTypeData));
+    
     const maxHp = monsterTypeData.hp || spawnerData.maxHp || 100;
     const speed = monsterTypeData.speed || CONFIG.MONSTER_SPEED;
     const monsterHeight = monsterTypeData.height || 40;
