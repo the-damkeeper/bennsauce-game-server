@@ -486,9 +486,9 @@ function broadcastMonsterPositions() {
 }
 
 /**
- * Handle monster damage from a player
+ * Handle monster damage from a player (with prediction reconciliation)
  */
-function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
+function damageMonster(mapId, monsterId, damage, attackerId, attackDirection, seq, predictedHp) {
     if (!mapMonsters[mapId] || !mapMonsters[mapId][monsterId]) return null;
     
     const monster = mapMonsters[mapId][monsterId];
@@ -547,14 +547,31 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
         console.log(`[Server] Knockback applied: monster ${monsterId} moved to x=${monster.x}, knockbackVelocityX=${knockbackVelocityX}`);
     }
     
+    // Check for prediction mismatch (only if client sent predicted HP)
+    let correction = null;
+    const HP_CORRECTION_THRESHOLD = 50;
+    if (predictedHp !== undefined && seq) {
+        const hpDifference = Math.abs(monster.hp - predictedHp);
+        if (hpDifference > HP_CORRECTION_THRESHOLD) {
+            console.log(`[Prediction] HP mismatch for seq=${seq}: predicted=${predictedHp}, actual=${monster.hp}, diff=${hpDifference}`);
+            correction = {
+                correctHp: monster.hp,
+                maxHp: monster.maxHp
+            };
+        }
+    }
+    
     // Broadcast damage to all players on map (use validated damage)
+    // Include sequence number so attacker can reconcile their prediction
     io.to(mapId).emit('monsterDamaged', {
         id: monsterId,
+        seq: seq, // Include sequence number for prediction reconciliation
         damage: validatedDamage,
         currentHp: monster.hp,
         maxHp: monster.maxHp,
         attackerId: attackerId,
-        knockbackVelocityX: knockbackVelocityX
+        knockbackVelocityX: knockbackVelocityX,
+        isCritical: damage > validatedDamage // If damage was capped, wasn't a crit
     });
     
     // Check for death
@@ -562,7 +579,8 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection) {
         return killMonster(mapId, monsterId);
     }
     
-    return { monster, killed: false };
+    // Return result with any correction needed
+    return { monster, killed: false, correction: correction };
 }
 
 /**
@@ -1113,25 +1131,44 @@ io.on('connection', (socket) => {
     });
 
     /**
-     * Player attacks a monster
+     * Player attacks a monster (with client-side prediction support)
      */
     socket.on('attackMonster', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
-        const { monsterId, damage, isCritical, attackType, playerDirection } = data;
+        const { seq, monsterId, damage, isCritical, attackType, playerDirection, predictedHp } = data;
         
-        console.log(`[Server] Attack received from ${currentPlayer.name}: monster ${monsterId}, damage ${damage}, playerDirection ${playerDirection}`);
+        console.log(`[Server] Attack received from ${currentPlayer.name}: seq=${seq}, monster ${monsterId}, damage ${damage}, playerDirection ${playerDirection}`);
         
         // Validate monster exists and is on this map
         if (!mapMonsters[currentMapId] || !mapMonsters[currentMapId][monsterId]) {
             console.log(`[Server] Monster ${monsterId} not found on map ${currentMapId}`);
+            // Send correction back to client - monster doesn't exist
+            if (seq) {
+                socket.emit('attackCorrection', {
+                    seq: seq,
+                    monsterId: monsterId,
+                    type: 'attack_invalid',
+                    reason: 'monster_not_found'
+                });
+            }
             return;
         }
         
-        const result = damageMonster(currentMapId, monsterId, damage, currentPlayer.odId, playerDirection);
+        const result = damageMonster(currentMapId, monsterId, damage, currentPlayer.odId, playerDirection, seq, predictedHp);
         
         if (result && result.killed) {
             console.log(`[Server] ${currentPlayer.name} killed monster ${monsterId}, loot goes to ${result.lootRecipient}`);
+        } else if (result && result.correction) {
+            // Send HP correction to the attacker only
+            socket.emit('attackCorrection', {
+                seq: seq,
+                monsterId: monsterId,
+                type: 'hp_correction',
+                correctHp: result.correction.correctHp,
+                maxHp: result.correction.maxHp,
+                reason: 'hp_mismatch'
+            });
         }
     });
 
