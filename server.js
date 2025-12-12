@@ -813,6 +813,13 @@ io.on('connection', (socket) => {
     let currentMapId = null;
 
     /**
+     * Ping/Pong for latency measurement
+     */
+    socket.on('ping', () => {
+        socket.emit('pong');
+    });
+
+    /**
      * Player joins the game with their character data
      */
     socket.on('join', (data) => {
