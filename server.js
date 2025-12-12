@@ -813,10 +813,10 @@ io.on('connection', (socket) => {
     let currentMapId = null;
 
     /**
-     * Ping/Pong for latency measurement
+     * Ping/Pong for latency measurement (using custom event names to avoid Socket.io reserved names)
      */
-    socket.on('ping', () => {
-        socket.emit('pong');
+    socket.on('latencyPing', () => {
+        socket.emit('latencyPong');
     });
 
     /**
