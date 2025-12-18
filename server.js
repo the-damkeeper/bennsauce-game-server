@@ -58,8 +58,8 @@ const CONFIG = {
     POSITION_UPDATE_RATE: 50, // ms between position broadcasts (20 updates/sec)
     PLAYER_TIMEOUT: 172800000, // 48 hours - effectively disabled (allow AFK players to stay visible)
     MAX_PLAYERS_PER_MAP: 50,
-    MONSTER_AI_RATE: 100, // ms between monster AI updates (10 updates/sec)
-    MONSTER_BROADCAST_RATE: 100, // ms between position broadcasts
+    MONSTER_AI_RATE: 50, // ms between monster AI updates (20 updates/sec for smoother movement)
+    MONSTER_BROADCAST_RATE: 50, // ms between position broadcasts (20/sec for high-ping players)
     RESPAWN_TIME: 8000, // Regular monster respawn time (8 seconds)
     BOSS_RESPAWN_TIME: 300000, // Boss respawn time (5 minutes)
     MONSTER_SPEED: 0.8, // Base monster movement speed
@@ -461,6 +461,8 @@ function updateMonsterAI(monster, mapId) {
  * Server only sends X position/direction - client handles Y physics locally
  */
 function broadcastMonsterPositions() {
+    const serverTime = Date.now();
+    
     for (const mapId in mapMonsters) {
         if (!maps[mapId] || Object.keys(maps[mapId]).length === 0) continue;
         
@@ -475,12 +477,13 @@ function broadcastMonsterPositions() {
                 facing: m.facing,
                 direction: m.direction,
                 aiState: m.aiState,
-                velocityX: m.velocityX || 0
+                velocityX: m.velocityX || 0,
+                t: serverTime // Timestamp for client-side lag compensation
             });
         }
         
         if (monsterPositions.length > 0) {
-            io.to(mapId).emit('monsterPositions', { monsters: monsterPositions });
+            io.to(mapId).emit('monsterPositions', { monsters: monsterPositions, t: serverTime });
         }
     }
 }
