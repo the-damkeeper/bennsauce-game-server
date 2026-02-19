@@ -8,8 +8,15 @@
 
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
+
+// Debug logging - set DEBUG=true env var to enable verbose server logs
+const DEBUG = process.env.DEBUG === 'true';
+
+// Server start time - sent to clients so they can detect server restarts
+const SERVER_START_TIME = Date.now();
 
 const app = express();
 
@@ -73,10 +80,9 @@ const CONFIG = {
     MAX_POSITION_UPDATES_PER_SECOND: 30, // Max position updates per second
     MAX_TELEPORT_DISTANCE: 2000, // Max distance player can move in one update (pixels)
     
-    // GM Authentication - password is stored in environment variable
-    // Set GM_PASSWORD environment variable on Render/hosting platform for production
-    // Default password for development - CHANGE THIS IN PRODUCTION!
-    GM_PASSWORD: process.env.GM_PASSWORD || 'bennsauce_gm_2024_secret'
+    // GM Authentication - MUST set GM_PASSWORD environment variable on Render/hosting platform.
+    // GM mode is DISABLED if the env var is not set.
+    GM_PASSWORD: process.env.GM_PASSWORD || null
 };
 
 // Authorized GM sessions (socket IDs that have been authenticated)
@@ -195,8 +201,7 @@ function spawnMonster(mapId, type, spawnerData = {}) {
     // Get monster type data from stored data
     const monsterTypeData = mapSpawnData[mapId]?.monsterTypes?.[type] || {};
     
-    // DEBUG: Log monster type data to verify canJump is being received
-    console.log(`[Server] Spawning ${type} - canJump: ${monsterTypeData.canJump}, jumpForce: ${monsterTypeData.jumpForce}, monsterTypeData keys:`, Object.keys(monsterTypeData));
+    if (DEBUG) console.log(`[Server] Spawning ${type} - canJump: ${monsterTypeData.canJump}, jumpForce: ${monsterTypeData.jumpForce}, monsterTypeData keys:`, Object.keys(monsterTypeData));
     
     const maxHp = monsterTypeData.hp || spawnerData.maxHp || 100;
     const speed = monsterTypeData.speed || CONFIG.MONSTER_SPEED;
@@ -286,7 +291,7 @@ function spawnMonster(mapId, type, spawnerData = {}) {
     mapMonsters[mapId][monsterId] = monster;
     monsterDamage[monsterId] = {};
     
-    console.log(`[Server] Spawned ${type} (${monsterId}) with ${maxHp} HP at (${Math.round(x)}, ${Math.round(y)})`);
+    if (DEBUG) console.log(`[Server] Spawned ${type} (${monsterId}) with ${maxHp} HP at (${Math.round(x)}, ${Math.round(y)})`);
     
     // Notify all players on this map about the new monster
     io.to(mapId).emit('monsterSpawned', monster);
@@ -474,10 +479,12 @@ function broadcastMonsterPositions() {
             monsterPositions.push({
                 id: m.id,
                 x: m.x,
+                y: m.y,           // Sync Y so all clients share same reference position
                 facing: m.facing,
                 direction: m.direction,
                 aiState: m.aiState,
                 velocityX: m.velocityX || 0,
+                velocityY: m.velocityY || 0,  // Sync Y velocity for jump state detection
                 t: serverTime // Timestamp for client-side lag compensation
             });
         }
@@ -547,7 +554,7 @@ function damageMonster(mapId, monsterId, damage, attackerId, attackDirection, se
         // Set knockback state to prevent AI from immediately moving back
         monster.knockbackEndTime = Date.now() + 500; // 500ms knockback duration
         
-        console.log(`[Server] Knockback applied: monster ${monsterId} moved to x=${monster.x}, knockbackVelocityX=${knockbackVelocityX}`);
+        if (DEBUG) console.log(`[Server] Knockback applied: monster ${monsterId} moved to x=${monster.x}, knockbackVelocityX=${knockbackVelocityX}`);
     }
     
     // Check for prediction mismatch (only if client sent predicted HP)
@@ -800,22 +807,18 @@ function getPartyMembersOnMap(mapId, playerOdId) {
     
     const player = maps[mapId][playerOdId];
     if (!player || !player.partyId) {
-        console.log(`[Server] getPartyMembersOnMap - player ${playerOdId} has no partyId`);
         return [];
     }
-    
-    console.log(`[Server] Looking for party members with partyId: ${player.partyId}`);
     
     const partyMembers = [];
     for (const odId in maps[mapId]) {
         const p = maps[mapId][odId];
-        console.log(`[Server] Checking player ${p.name} (${odId}) - partyId: ${p.partyId}`);
         if (p.odId !== playerOdId && p.partyId === player.partyId) {
             partyMembers.push(p.odId);
         }
     }
     
-    console.log(`[Server] Found ${partyMembers.length} party members:`, partyMembers);
+    if (DEBUG) console.log(`[Server] Found ${partyMembers.length} party members for ${playerOdId}:`, partyMembers);
     return partyMembers;
 }
 
@@ -829,6 +832,9 @@ function getMapMonsters(mapId) {
 
 io.on('connection', (socket) => {
     console.log(`[Server] Player connected: ${socket.id}`);
+    
+    // Issue #10: Send server start time so clients can detect restarts
+    socket.emit('serverStartTime', { time: SERVER_START_TIME });
     
     let currentPlayer = null;
     let currentMapId = null;
@@ -846,7 +852,7 @@ io.on('connection', (socket) => {
     socket.on('join', (data) => {
         const { odId, name, mapId, x, y, customization, level, playerClass, guild, equipped, cosmeticEquipped, equippedMedal, displayMedals, partyId } = data;
         
-        console.log(`[Server] Player ${name} joining with partyId: ${partyId}`);
+        if (DEBUG) console.log(`[Server] Player ${name} joining with partyId: ${partyId}`);
         
         if (!odId || !name || !mapId) {
             socket.emit('error', { message: 'Invalid join data' });
@@ -897,7 +903,7 @@ io.on('connection', (socket) => {
         // Send existing monsters on this map to the new player
         if (mapMonsters[mapId] && Object.keys(mapMonsters[mapId]).length > 0) {
             const existingMonsters = getMapMonsters(mapId);
-            console.log(`[Server] Sending ${existingMonsters.length} existing monsters to ${name}`);
+            if (DEBUG) console.log(`[Server] Sending ${existingMonsters.length} existing monsters to ${name}`);
             socket.emit('currentMonsters', existingMonsters);
         }
 
@@ -905,7 +911,7 @@ io.on('connection', (socket) => {
         socket.to(mapId).emit('playerJoined', currentPlayer);
 
         console.log(`[Server] ${name} joined map ${mapId} (${Object.keys(maps[mapId]).length} players on map)`);
-        console.log(`[Server] Player equipment:`, JSON.stringify(equipped));
+        if (DEBUG) console.log(`[Server] Player equipment:`, JSON.stringify(equipped));
     });
 
     /**
@@ -1084,13 +1090,13 @@ io.on('connection', (socket) => {
 
         const { message } = data;
         
+        if (DEBUG) console.log(`[Server] Chat from ${currentPlayer.name} on ${currentMapId}:`, message);
         // Broadcast chat bubble to other players on map
         const chatData = {
             odId: currentPlayer.odId,
             name: currentPlayer.name,
             message
         };
-        console.log(`[Server] Broadcasting chat from ${currentPlayer.name} to map ${currentMapId}:`, chatData);
         socket.to(currentMapId).emit('playerChat', chatData);
     });
 
@@ -1115,8 +1121,8 @@ io.on('connection', (socket) => {
             return;
         }
         
-        console.log(`[Server] Initializing monsters for ${mapId}:`, monsters);
-        if (spawnPositions) {
+        if (DEBUG) console.log(`[Server] Initializing monsters for ${mapId}:`, monsters);
+        if (spawnPositions && DEBUG) {
             console.log(`[Server] Received ${spawnPositions.length} pre-calculated spawn positions`);
         }
         
@@ -1141,11 +1147,11 @@ io.on('connection', (socket) => {
         
         const { seq, monsterId, damage, isCritical, attackType, playerDirection, predictedHp } = data;
         
-        console.log(`[Server] Attack received from ${currentPlayer.name}: seq=${seq}, monster ${monsterId}, damage ${damage}, playerDirection ${playerDirection}`);
+        if (DEBUG) console.log(`[Server] Attack received from ${currentPlayer.name}: seq=${seq}, monster ${monsterId}, damage ${damage}`);
         
         // Validate monster exists and is on this map
         if (!mapMonsters[currentMapId] || !mapMonsters[currentMapId][monsterId]) {
-            console.log(`[Server] Monster ${monsterId} not found on map ${currentMapId}`);
+            if (DEBUG) console.log(`[Server] Monster ${monsterId} not found on map ${currentMapId}`);
             // Send correction back to client - monster doesn't exist
             if (seq) {
                 socket.emit('attackCorrection', {
@@ -1161,7 +1167,7 @@ io.on('connection', (socket) => {
         const result = damageMonster(currentMapId, monsterId, damage, currentPlayer.odId, playerDirection, seq, predictedHp);
         
         if (result && result.killed) {
-            console.log(`[Server] ${currentPlayer.name} killed monster ${monsterId}, loot goes to ${result.lootRecipient}`);
+            if (DEBUG) console.log(`[Server] ${currentPlayer.name} killed monster ${monsterId}, loot goes to ${result.lootRecipient}`);
         } else if (result && result.correction) {
             // Send HP correction to the attacker only
             socket.emit('attackCorrection', {
@@ -1179,26 +1185,20 @@ io.on('connection', (socket) => {
      * Player transformed a monster to elite (broadcast to all clients)
      */
     socket.on('transformElite', (data) => {
-        console.log(`[ELITE DEBUG Server] ===== RECEIVED transformElite event =====`);
-        console.log(`[ELITE DEBUG Server] Data:`, data);
-        console.log(`[ELITE DEBUG Server] Current player:`, currentPlayer?.name);
-        console.log(`[ELITE DEBUG Server] Current map:`, currentMapId);
+        if (DEBUG) {
+            console.log(`[ELITE DEBUG Server] ===== RECEIVED transformElite event =====`);
+            console.log(`[ELITE DEBUG Server] Data:`, data);
+            console.log(`[ELITE DEBUG Server] Current player:`, currentPlayer?.name);
+            console.log(`[ELITE DEBUG Server] Current map:`, currentMapId);
+        }
         
         if (!currentPlayer || !currentMapId) {
-            console.log(`[ELITE DEBUG Server] Transform received but no player/map:`, {
-                hasPlayer: !!currentPlayer,
-                hasMap: !!currentMapId
-            });
+            if (DEBUG) console.log(`[ELITE DEBUG Server] Transform received but no player/map`);
             return;
         }
         
         const { monsterId, maxHp, damage, originalMaxHp, originalDamage } = data;
-        console.log(`[ELITE DEBUG Server] Transform request from ${currentPlayer.name}:`, {
-            monsterId,
-            mapId: currentMapId,
-            maxHp,
-            damage
-        });
+        if (DEBUG) console.log(`[ELITE DEBUG Server] Transform request from ${currentPlayer.name}:`, { monsterId, mapId: currentMapId, maxHp, damage });
         
         // Update server monster state
         if (mapMonsters[currentMapId] && mapMonsters[currentMapId][monsterId]) {
@@ -1210,8 +1210,7 @@ io.on('connection', (socket) => {
             monster.originalMaxHp = originalMaxHp;
             monster.originalDamage = originalDamage;
             
-            console.log(`[ELITE DEBUG Server] Monster ${monsterId} transformed to ELITE by ${currentPlayer.name}`);
-            console.log(`[ELITE DEBUG Server] Broadcasting to room: ${currentMapId}`);
+            if (DEBUG) console.log(`[ELITE DEBUG Server] Monster ${monsterId} transformed to ELITE by ${currentPlayer.name}`);
             
             // Broadcast to ALL clients on map (including sender) so they all apply the transformation
             io.to(currentMapId).emit('monsterTransformedElite', {
@@ -1222,13 +1221,10 @@ io.on('connection', (socket) => {
                 originalMaxHp: originalMaxHp,
                 originalDamage: originalDamage
             });
-            
-            console.log(`[ELITE DEBUG Server] Broadcast complete`);
         } else {
-            console.log(`[ELITE DEBUG Server] Monster NOT FOUND:`, {
+            if (DEBUG) console.log(`[ELITE DEBUG Server] Monster NOT FOUND:`, {
                 hasMapMonsters: !!mapMonsters[currentMapId],
-                hasThisMonster: mapMonsters[currentMapId] ? !!mapMonsters[currentMapId][monsterId] : false,
-                availableMonsters: mapMonsters[currentMapId] ? Object.keys(mapMonsters[currentMapId]) : []
+                hasThisMonster: mapMonsters[currentMapId] ? !!mapMonsters[currentMapId][monsterId] : false
             });
         }
     });
@@ -1241,7 +1237,7 @@ io.on('connection', (socket) => {
         
         const { itemId, itemName, x, y } = data;
         
-        console.log(`[Server] ${currentPlayer.name} picked up ${itemName} at (${x}, ${y})`);
+        if (DEBUG) console.log(`[Server] ${currentPlayer.name} picked up ${itemName} at (${x}, ${y})`);
         
         // Broadcast to ALL players on map (including sender) so everyone removes the item
         io.to(currentMapId).emit('itemPickedUp', {
@@ -1266,7 +1262,7 @@ io.on('connection', (socket) => {
         const oldPartyId = currentPlayer.partyId;
         currentPlayer.partyId = data.partyId || null;
         
-        console.log(`[${currentPlayer.name}] Party updated: ${oldPartyId} -> ${currentPlayer.partyId}`);
+        if (DEBUG) console.log(`[${currentPlayer.name}] Party updated: ${oldPartyId} -> ${currentPlayer.partyId}`);
         
         // Broadcast to others on map so they know about party change
         if (currentMapId) {
@@ -1382,7 +1378,7 @@ io.on('connection', (socket) => {
     socket.on('playerProjectile', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
-        console.log(`[Server] Relaying projectile from ${currentPlayer.odId}, id: ${data.projectileId}`);
+        if (DEBUG) console.log(`[Server] Relaying projectile from ${currentPlayer.odId}, id: ${data.projectileId}`);
         
         // Relay projectile to other players on the map
         socket.to(currentMapId).emit('remoteProjectile', {
@@ -1406,7 +1402,7 @@ io.on('connection', (socket) => {
     socket.on('playerProjectileHit', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
-        console.log(`[Server] Relaying projectile HIT from ${currentPlayer.odId}, id: ${data.projectileId}`);
+        if (DEBUG) console.log(`[Server] Relaying projectile HIT from ${currentPlayer.odId}, id: ${data.projectileId}`);
         
         // Relay projectile hit to other players on the map
         socket.to(currentMapId).emit('remoteProjectileHit', {
@@ -1451,9 +1447,9 @@ io.on('connection', (socket) => {
      * Player updates their appearance (equipment, cosmetics, guild, medal)
      */
     socket.on('updateAppearance', (data) => {
-        console.log(`[Server] Received updateAppearance from ${currentPlayer?.name || 'unknown'} on map ${currentMapId || 'none'}`);
+        if (DEBUG) console.log(`[Server] Received updateAppearance from ${currentPlayer?.name || 'unknown'}`);
         if (!currentPlayer || !currentMapId) {
-            console.warn('[Server] updateAppearance ignored - no currentPlayer or mapId');
+            if (DEBUG) console.warn('[Server] updateAppearance ignored - no currentPlayer or mapId');
             return;
         }
         
@@ -1485,7 +1481,8 @@ io.on('connection', (socket) => {
         };
         socket.to(currentMapId).emit('playerAppearanceUpdated', broadcastData);
         
-        console.log(`[Server] ${currentPlayer.name} updated appearance, broadcasting to map ${currentMapId}:`, broadcastData);
+        console.log(`[Server] ${currentPlayer.name} updated appearance, broadcasting to map ${currentMapId}`);
+        if (DEBUG) console.log(`[Server] Appearance data:`, broadcastData);
     });
 
     /**
@@ -1724,3 +1721,23 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Server] BennSauce Game Server running on port ${PORT}`);
 });
+
+// ====================================================
+// ISSUE #1: Self keep-alive ping to prevent Render.com
+// free-tier cold starts (spins down after 15min idle).
+// Pings own health endpoint every 10 minutes.
+// ====================================================
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+setInterval(() => {
+    try {
+        const url = new URL(SELF_URL);
+        const lib = url.protocol === 'https:' ? https : require('http');
+        lib.get(SELF_URL, (res) => {
+            if (DEBUG) console.log(`[KeepAlive] Self-ping OK (status ${res.statusCode})`);
+        }).on('error', (err) => {
+            if (DEBUG) console.warn('[KeepAlive] Self-ping failed:', err.message);
+        });
+    } catch (e) {
+        if (DEBUG) console.warn('[KeepAlive] Invalid URL for self-ping:', SELF_URL);
+    }
+}, 10 * 60 * 1000); // Every 10 minutes
