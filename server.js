@@ -896,8 +896,8 @@ function generateMonsterDrops(mapId, monster, monsterId) {
         }
     }
     
-    // Guaranteed salami stick on baby slimes
-    if (monster.type === 'babySlime' || monster.type === 'babyRedSlime' || monster.type === 'babyBlueSlime') {
+    // Salami Celebration Event: 20% chance to drop Salami Stick from any monster
+    if (Math.random() < 0.2) {
         dropIndex++;
         drops.push({
             id: `drop_${Date.now()}_${dropIndex}_${Math.random().toString(36).substr(2, 9)}`,
