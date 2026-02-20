@@ -1014,7 +1014,7 @@ io.on('connection', (socket) => {
     socket.on('updatePosition', (data) => {
         if (!currentPlayer || !currentMapId) return;
 
-        const { x, y, facing, animationState, velocityX, velocityY } = data;
+        const { x, y, facing, animationState, velocityX, velocityY, activeBuffs } = data;
 
         // Update player data
         currentPlayer.x = x;
@@ -1023,6 +1023,7 @@ io.on('connection', (socket) => {
         currentPlayer.animationState = animationState || 'idle';
         currentPlayer.velocityX = velocityX || 0;
         currentPlayer.velocityY = velocityY || 0;
+        currentPlayer.activeBuffs = activeBuffs || [];
         currentPlayer.lastUpdate = Date.now();
 
         // Broadcast to other players on the same map
@@ -1033,7 +1034,8 @@ io.on('connection', (socket) => {
             facing,
             animationState,
             velocityX,
-            velocityY
+            velocityY,
+            activeBuffs: currentPlayer.activeBuffs
         });
     });
 
@@ -1051,6 +1053,17 @@ io.on('connection', (socket) => {
             delete maps[oldMapId][currentPlayer.odId];
             socket.leave(oldMapId);
             socket.to(oldMapId).emit('playerLeft', { odId: currentPlayer.odId });
+            
+            // If old map is now empty, clean up monster data
+            // so next visitor triggers fresh spawn initialization
+            if (Object.keys(maps[oldMapId]).length === 0) {
+                delete maps[oldMapId];
+                if (mapMonsters[oldMapId]) {
+                    delete mapMonsters[oldMapId];
+                    delete mapSpawnData[oldMapId];
+                    console.log(`[Server] Cleaned up empty map on map change: ${oldMapId}`);
+                }
+            }
         }
 
         // Add to new map
@@ -1671,6 +1684,17 @@ io.on('connection', (socket) => {
             socket.to(currentMapId).emit('playerLeft', { odId: currentPlayer.odId });
 
             console.log(`[Server] ${currentPlayer.name} disconnected from ${currentMapId}`);
+            
+            // If map is now empty, clean up monster data immediately
+            // so next player triggers fresh spawn initialization with latest client logic
+            if (maps[currentMapId] && Object.keys(maps[currentMapId]).length === 0) {
+                delete maps[currentMapId];
+                if (mapMonsters[currentMapId]) {
+                    delete mapMonsters[currentMapId];
+                    delete mapSpawnData[currentMapId];
+                    console.log(`[Server] Cleaned up empty map on disconnect: ${currentMapId}`);
+                }
+            }
         }
     });
 });
@@ -1703,15 +1727,15 @@ setInterval(() => {
                 console.log(`[Server] Removed inactive player: ${player.name}`);
             }
         }
-        // Clean up empty maps
-        // Only delete monster data if no monsters are pending (prevents crash on respawn)
+        // Clean up empty maps - clear ALL map data when no players remain
+        // This ensures fresh monster initialization with latest client spawn logic
+        // Pending respawn timers safely check for mapMonsters[mapId] before acting
         if (Object.keys(maps[mapId]).length === 0) {
             delete maps[mapId];
-            // Only clean up monster data if no monsters exist (all have respawned or been cleaned)
-            if (mapMonsters[mapId] && Object.keys(mapMonsters[mapId]).length === 0) {
+            if (mapMonsters[mapId]) {
                 delete mapMonsters[mapId];
                 delete mapSpawnData[mapId];
-                console.log(`[Server] Cleaned up empty map: ${mapId}`);
+                console.log(`[Server] Cleaned up empty map and monster data: ${mapId}`);
             }
         }
     }
