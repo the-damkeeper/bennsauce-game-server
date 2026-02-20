@@ -92,6 +92,29 @@ const authorizedGMs = new Set();
 // Structure: { odId: { attacks: [{timestamp}], pickups: [{timestamp}], positions: [{timestamp, x, y}] } }
 const rateLimiters = {};
 
+// ============================================
+// SERVER-SIDE SHINY & ELITE MONSTER CONFIG
+// ============================================
+const SHINY_CONFIG = {
+    spawnChance: 0.02, // 2% chance on each monster spawn
+    hpMultiplier: 3    // 3x HP (visuals/loot handled client-side)
+};
+
+const ELITE_CONFIG = {
+    checkIntervalMin: 2 * 60 * 1000,  // Min 2 minutes between checks
+    checkIntervalMax: 7 * 60 * 1000,  // Max 7 minutes between checks
+    spawnChance: 0.3,                  // 30% chance per check
+    hpMultiplier: 100,                 // 100x HP
+    damageMultiplier: 3,               // 3x damage
+    excludedMapPrefixes: ['dewdrop', 'pq'] // Don't spawn on tutorial/party quest maps
+};
+
+// Track current elite monsters per map (only one per map)
+const currentEliteMonsters = {};
+
+// Elite check timer
+let eliteCheckInterval = null;
+
 /**
  * Check rate limit for an action
  * @returns {boolean} true if action is allowed, false if rate limited
@@ -188,6 +211,9 @@ function initializeMapMonsters(mapId, mapData) {
     
     // Start monster AI if not already running
     startMonsterAI();
+    
+    // Start elite monster check system if not already running
+    startEliteCheckSystem();
 }
 
 /**
@@ -291,7 +317,18 @@ function spawnMonster(mapId, type, spawnerData = {}) {
     mapMonsters[mapId][monsterId] = monster;
     monsterDamage[monsterId] = {};
     
-    if (DEBUG) console.log(`[Server] Spawned ${type} (${monsterId}) with ${maxHp} HP at (${Math.round(x)}, ${Math.round(y)})`);
+    // Server-side shiny roll: 2% chance for eligible monsters
+    if (!monster.isMiniBoss && !monster.isTrialBoss && monster.type !== 'testDummy') {
+        const isExcludedMap = ELITE_CONFIG.excludedMapPrefixes.some(prefix => mapId.startsWith(prefix));
+        if (!isExcludedMap && Math.random() < SHINY_CONFIG.spawnChance) {
+            monster.isShiny = true;
+            monster.maxHp = Math.floor(monster.maxHp * SHINY_CONFIG.hpMultiplier);
+            monster.hp = monster.maxHp;
+            console.log(`[Server] ✨ SHINY ${type} spawned on ${mapId}!`);
+        }
+    }
+    
+    if (DEBUG) console.log(`[Server] Spawned ${type} (${monsterId}) with ${maxHp} HP at (${Math.round(x)}, ${Math.round(y)})${monster.isShiny ? ' [SHINY]' : ''}`);
     
     // Notify all players on this map about the new monster
     io.to(mapId).emit('monsterSpawned', monster);
@@ -311,6 +348,76 @@ function startMonsterAI() {
         updateAllMonsters();
         broadcastMonsterPositions();
     }, CONFIG.MONSTER_AI_RATE);
+}
+
+/**
+ * Server-side elite monster check system
+ * Periodically checks each active map for a possible elite spawn
+ */
+function startEliteCheckSystem() {
+    if (eliteCheckInterval) return; // Already running
+    
+    console.log('[Server] Starting elite monster check system');
+    
+    // Schedule the first check after a random delay
+    scheduleNextEliteCheck();
+}
+
+function scheduleNextEliteCheck() {
+    const delay = ELITE_CONFIG.checkIntervalMin + Math.random() * (ELITE_CONFIG.checkIntervalMax - ELITE_CONFIG.checkIntervalMin);
+    eliteCheckInterval = setTimeout(() => {
+        attemptServerEliteSpawn();
+        scheduleNextEliteCheck(); // Schedule next check
+    }, delay);
+}
+
+function attemptServerEliteSpawn() {
+    // Check each active map
+    for (const mapId in mapMonsters) {
+        // Skip if no players on this map
+        if (!maps[mapId] || Object.keys(maps[mapId]).length === 0) continue;
+        
+        // Skip excluded maps
+        if (ELITE_CONFIG.excludedMapPrefixes.some(prefix => mapId.startsWith(prefix))) continue;
+        
+        // Skip if this map already has an elite
+        if (currentEliteMonsters[mapId]) continue;
+        
+        // 30% chance per check
+        if (Math.random() > ELITE_CONFIG.spawnChance) continue;
+        
+        // Get eligible monsters (alive, not boss, not already elite/shiny)
+        const eligible = Object.values(mapMonsters[mapId]).filter(m => 
+            !m.isDead && !m.isMiniBoss && !m.isTrialBoss && !m.isEliteMonster && m.type !== 'testDummy'
+        );
+        
+        if (eligible.length === 0) continue;
+        
+        // Pick random monster
+        const target = eligible[Math.floor(Math.random() * eligible.length)];
+        
+        // Transform to elite on server
+        target.isEliteMonster = true;
+        target.originalMaxHp = target.maxHp;
+        target.originalDamage = target.damage || 10;
+        target.maxHp = Math.floor(target.maxHp * ELITE_CONFIG.hpMultiplier);
+        target.hp = target.maxHp;
+        target.damage = Math.floor((target.damage || 10) * ELITE_CONFIG.damageMultiplier);
+        
+        currentEliteMonsters[mapId] = target.id;
+        
+        console.log(`[Server] ⚠️ ELITE ${target.type} spawned on ${mapId}! (monster ${target.id})`);
+        
+        // Broadcast to all clients on this map
+        io.to(mapId).emit('monsterTransformedElite', {
+            monsterId: target.id,
+            maxHp: target.maxHp,
+            hp: target.hp,
+            damage: target.damage,
+            originalMaxHp: target.originalMaxHp,
+            originalDamage: target.originalDamage
+        });
+    }
 }
 
 /**
@@ -603,6 +710,11 @@ function killMonster(mapId, monsterId) {
     monster.isDead = true;
     monster.hp = 0;
     
+    // Clean up elite tracking for this map if the elite monster died
+    if (monster.isEliteMonster && currentEliteMonsters[mapId] === monsterId) {
+        delete currentEliteMonsters[mapId];
+    }
+    
     // Find player who dealt most damage
     const damageMap = monsterDamage[monsterId] || {};
     let topDamager = null;
@@ -632,7 +744,8 @@ function killMonster(mapId, monsterId) {
         lootRecipient: topDamager, // Player who gets the loot
         drops: drops, // Server-generated drops
         partyMembers: partyMembers, // Party members who get shared EXP
-        isEliteMonster: monster.isEliteMonster || false // Elite status for client effects
+        isEliteMonster: monster.isEliteMonster || false, // Elite status for client effects
+        isShiny: monster.isShiny || false // Shiny status for client effects
     });
     
     // Clean up damage tracking
@@ -717,7 +830,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
             y: baseY,
             amount: eliteGoldAmount,
             velocityX: -2,
-            velocityY: -8
+            velocityY: -4
         });
         
         // Guaranteed Gachapon Tickets (2-5)
@@ -729,7 +842,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
                 x: baseX - 20 + (i * 15),
                 y: baseY,
                 velocityX: (Math.random() * 2) - 1,
-                velocityY: -7 - (Math.random() * 2)
+                velocityY: -3 - (Math.random() * 2)
             });
         }
         
@@ -742,7 +855,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
                 x: baseX + 20 + (i * 15),
                 y: baseY,
                 velocityX: (Math.random() * 2) - 1,
-                velocityY: -7 - (Math.random() * 2)
+                velocityY: -3 - (Math.random() * 2)
             });
         }
     }
@@ -755,7 +868,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
         if (roll < ((loot.rate || 0.1) * dropRateMultiplier)) {
             // Generate consistent velocity for this drop
             const velocityX = (Math.random() * 4) - 2; // -2 to 2
-            const velocityY = -7 - (Math.random() * 3); // -7 to -10 (upward)
+            const velocityY = -3 - (Math.random() * 2); // -3 to -5 (upward)
             
             dropIndex++;
             if (loot.name === 'Gold') {
@@ -792,7 +905,7 @@ function generateMonsterDrops(mapId, monster, monsterId) {
             x: baseX,
             y: baseY,
             velocityX: (Math.random() * 4) - 2,
-            velocityY: -7 - (Math.random() * 3)
+            velocityY: -3 - (Math.random() * 2)
         });
     }
     
@@ -1014,7 +1127,7 @@ io.on('connection', (socket) => {
     socket.on('updatePosition', (data) => {
         if (!currentPlayer || !currentMapId) return;
 
-        const { x, y, facing, animationState, velocityX, velocityY, activeBuffs } = data;
+        const { x, y, facing, animationState, velocityX, velocityY, activeBuffs, pet } = data;
 
         // Update player data
         currentPlayer.x = x;
@@ -1024,10 +1137,11 @@ io.on('connection', (socket) => {
         currentPlayer.velocityX = velocityX || 0;
         currentPlayer.velocityY = velocityY || 0;
         currentPlayer.activeBuffs = activeBuffs || [];
+        currentPlayer.pet = pet || null;
         currentPlayer.lastUpdate = Date.now();
 
         // Broadcast to other players on the same map
-        socket.to(currentMapId).emit('playerMoved', {
+        const moveData = {
             odId: currentPlayer.odId,
             x,
             y,
@@ -1036,7 +1150,11 @@ io.on('connection', (socket) => {
             velocityX,
             velocityY,
             activeBuffs: currentPlayer.activeBuffs
-        });
+        };
+        if (currentPlayer.pet) {
+            moveData.pet = currentPlayer.pet;
+        }
+        socket.to(currentMapId).emit('playerMoved', moveData);
     });
 
     /**
@@ -1260,6 +1378,49 @@ io.on('connection', (socket) => {
             y: y,
             pickedUpBy: currentPlayer.odId,
             pickedUpByName: currentPlayer.name
+        });
+    });
+
+    /**
+     * Player drops an item on the ground (from inventory or GM spawn)
+     * Broadcast to other players on the same map so they can see it
+     */
+    socket.on('playerDropItem', (data) => {
+        if (!currentPlayer || !currentMapId) return;
+        
+        const { name, x, y, stats, rarity, enhancement, quantity, levelReq, isQuestItem, isGold, amount, id } = data;
+        
+        if (DEBUG) console.log(`[Server] ${currentPlayer.name} dropped ${name} at (${x}, ${y})`);
+        
+        // Generate consistent velocity server-side
+        const velocityX = (Math.random() * 4) - 2;
+        const velocityY = -3 - (Math.random() * 2);
+        const dropId = id || `pdrop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Broadcast to OTHER players on the map (not the sender)
+        socket.to(currentMapId).emit('playerItemDropped', {
+            name,
+            x,
+            y,
+            id: dropId,
+            velocityX,
+            velocityY,
+            stats: stats || null,
+            rarity: rarity || null,
+            enhancement: enhancement || 0,
+            quantity: quantity || 1,
+            levelReq: levelReq || 0,
+            isQuestItem: isQuestItem || false,
+            isGold: isGold || false,
+            amount: amount || 0,
+            droppedBy: currentPlayer.name
+        });
+        
+        // Send back the generated ID and velocity to the sender too
+        socket.emit('playerDropConfirm', {
+            id: dropId,
+            velocityX,
+            velocityY
         });
     });
 
