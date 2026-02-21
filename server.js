@@ -112,6 +112,10 @@ const ELITE_CONFIG = {
 // Track current elite monsters per map (only one per map)
 const currentEliteMonsters = {};
 
+// Track ground items per map for pickup validation (prevents double-pickup duplication)
+// Structure: { mapId: { itemId: { name, x, y, droppedBy, timestamp } } }
+const mapGroundItems = {};
+
 // Elite check timer
 let eliteCheckInterval = null;
 
@@ -732,6 +736,20 @@ function killMonster(mapId, monsterId) {
     // Generate drops server-side for consistency
     const drops = generateMonsterDrops(mapId, monster, monsterId);
     
+    // Register all drops in server ground item tracking for pickup validation
+    if (!mapGroundItems[mapId]) mapGroundItems[mapId] = {};
+    for (const drop of drops) {
+        if (drop.id) {
+            mapGroundItems[mapId][drop.id] = {
+                name: drop.name,
+                x: drop.x,
+                y: drop.y,
+                droppedBy: '__monster__',
+                timestamp: Date.now()
+            };
+        }
+    }
+    
     // Find party members of the killer for shared EXP
     const partyMembers = getPartyMembersOnMap(mapId, topDamager);
     
@@ -1181,6 +1199,10 @@ io.on('connection', (socket) => {
                     delete mapSpawnData[oldMapId];
                     console.log(`[Server] Cleaned up empty map on map change: ${oldMapId}`);
                 }
+                // Clean up ground item tracking
+                if (mapGroundItems[oldMapId]) {
+                    delete mapGroundItems[oldMapId];
+                }
             }
         }
 
@@ -1361,44 +1383,70 @@ io.on('connection', (socket) => {
     });
 
     /**
-     * Player picks up an item - broadcast to all players so they can remove it
+     * Player picks up an item - validate server-side then broadcast removal
      */
     socket.on('itemPickup', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
+        // Rate limit pickups
+        if (!checkRateLimit(currentPlayer.odId, 'pickups', CONFIG.MAX_PICKUPS_PER_SECOND)) return;
+        
         const { itemId, itemName, x, y } = data;
         
-        if (DEBUG) console.log(`[Server] ${currentPlayer.name} picked up ${itemName} at (${x}, ${y})`);
-        
-        // Broadcast to ALL players on map (including sender) so everyone removes the item
-        io.to(currentMapId).emit('itemPickedUp', {
-            itemId: itemId,
-            itemName: itemName,
-            x: x,
-            y: y,
-            pickedUpBy: currentPlayer.odId,
-            pickedUpByName: currentPlayer.name
-        });
+        // Server-side validation: check if the item actually exists on ground
+        if (mapGroundItems[currentMapId] && mapGroundItems[currentMapId][itemId]) {
+            // Item exists — remove from server tracking (first-come-first-served)
+            delete mapGroundItems[currentMapId][itemId];
+            
+            if (DEBUG) console.log(`[Server] ${currentPlayer.name} picked up ${itemName} (${itemId}) - validated`);
+            
+            // Broadcast to ALL players on map so everyone removes the item
+            io.to(currentMapId).emit('itemPickedUp', {
+                itemId: itemId,
+                itemName: itemName,
+                x: x,
+                y: y,
+                pickedUpBy: currentPlayer.odId,
+                pickedUpByName: currentPlayer.name
+            });
+        } else {
+            // Item not found on server — already picked up by someone else
+            if (DEBUG) console.log(`[Server] ${currentPlayer.name} tried to pick up ${itemName} (${itemId}) but it's already gone`);
+            
+            // Tell the requesting player the pickup was rejected
+            socket.emit('itemPickupRejected', {
+                itemId: itemId,
+                itemName: itemName,
+                reason: 'already_picked_up'
+            });
+        }
     });
 
     /**
      * Player drops an item on the ground (from inventory or GM spawn)
-     * Broadcast to other players on the same map so they can see it
+     * Server assigns canonical ID and broadcasts to ALL players
      */
     socket.on('playerDropItem', (data) => {
         if (!currentPlayer || !currentMapId) return;
         
-        const { name, x, y, stats, rarity, enhancement, quantity, levelReq, isQuestItem, isGold, amount, id } = data;
+        const { name, x, y, stats, rarity, enhancement, quantity, levelReq, isQuestItem, isGold, amount } = data;
         
         if (DEBUG) console.log(`[Server] ${currentPlayer.name} dropped ${name} at (${x}, ${y})`);
         
-        // Generate consistent velocity server-side
+        // Server assigns canonical ID — all clients MUST use this ID
+        const dropId = `pdrop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const velocityX = (Math.random() * 4) - 2;
         const velocityY = -3 - (Math.random() * 2);
-        const dropId = id || `pdrop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        // Broadcast to OTHER players on the map (not the sender)
-        socket.to(currentMapId).emit('playerItemDropped', {
+        // Track on server for pickup validation
+        if (!mapGroundItems[currentMapId]) mapGroundItems[currentMapId] = {};
+        mapGroundItems[currentMapId][dropId] = {
+            name, x, y,
+            droppedBy: currentPlayer.odId,
+            timestamp: Date.now()
+        };
+        
+        const dropData = {
             name,
             x,
             y,
@@ -1414,9 +1462,12 @@ io.on('connection', (socket) => {
             isGold: isGold || false,
             amount: amount || 0,
             droppedBy: currentPlayer.name
-        });
+        };
         
-        // Send back the generated ID and velocity to the sender too
+        // Broadcast to OTHER players on the map
+        socket.to(currentMapId).emit('playerItemDropped', dropData);
+        
+        // Send canonical ID back to sender so their local item uses the same ID
         socket.emit('playerDropConfirm', {
             id: dropId,
             velocityX,
@@ -1855,6 +1906,10 @@ io.on('connection', (socket) => {
                     delete mapSpawnData[currentMapId];
                     console.log(`[Server] Cleaned up empty map on disconnect: ${currentMapId}`);
                 }
+                // Clean up ground item tracking
+                if (mapGroundItems[currentMapId]) {
+                    delete mapGroundItems[currentMapId];
+                }
             }
         }
     });
@@ -1897,6 +1952,10 @@ setInterval(() => {
                 delete mapMonsters[mapId];
                 delete mapSpawnData[mapId];
                 console.log(`[Server] Cleaned up empty map and monster data: ${mapId}`);
+            }
+            // Clean up ground item tracking
+            if (mapGroundItems[mapId]) {
+                delete mapGroundItems[mapId];
             }
         }
     }
