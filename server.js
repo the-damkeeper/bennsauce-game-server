@@ -999,7 +999,7 @@ io.on('connection', (socket) => {
             mapId,
             facing: 'right',
             animationState: 'idle',
-            customization: customization || {},
+            customization: (customization && customization.skinTone !== undefined) ? customization : { skinTone: 0, hairStyle: 0, hairColor: 0, eyeColor: 0 },
             level: level || 1,
             playerClass: playerClass || 'beginner',
             guild: guild || null,
@@ -1095,7 +1095,7 @@ io.on('connection', (socket) => {
             mapId,
             facing: 'right',
             animationState: 'idle',
-            customization: customization || {},
+            customization: (customization && customization.skinTone !== undefined) ? customization : { skinTone: 0, hairStyle: 0, hairColor: 0, eyeColor: 0 },
             level: level || 1,
             playerClass: playerClass || 'beginner',
             guild: guild || null,
@@ -1694,12 +1694,16 @@ io.on('connection', (socket) => {
         if (data.displayMedals !== undefined) {
             currentPlayer.displayMedals = data.displayMedals;
         }
+        if (data.customization && data.customization.skinTone !== undefined) {
+            currentPlayer.customization = data.customization;
+        }
         
         // Broadcast appearance update to other players on the map
         const broadcastData = {
             odId: currentPlayer.odId,
             equipped: currentPlayer.equipped,
             cosmeticEquipped: currentPlayer.cosmeticEquipped,
+            customization: currentPlayer.customization,
             guild: currentPlayer.guild,
             equippedMedal: currentPlayer.equippedMedal,
             displayMedals: currentPlayer.displayMedals
