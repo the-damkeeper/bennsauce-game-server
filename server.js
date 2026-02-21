@@ -93,6 +93,16 @@ const authorizedGMs = new Set();
 const rateLimiters = {};
 
 // ============================================
+// CHESS GAME MATCHMAKING
+// ============================================
+// Players waiting for a chess match per map
+// Structure: { mapId: { socketId, playerName, gameId } }
+const chessWaiting = {};
+// Active chess games
+// Structure: { gameId: { whiteSocketId, blackSocketId, whiteName, blackName } }
+const chessGames = {};
+
+// ============================================
 // SERVER-SIDE SHINY & ELITE MONSTER CONFIG
 // ============================================
 const SHINY_CONFIG = {
@@ -1877,10 +1887,127 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ==========================================
+    // CHESS GAME SOCKET EVENTS
+    // ==========================================
+
+    /**
+     * Player wants to play chess - join waiting queue or match with waiting player
+     */
+    socket.on('chessJoin', (data) => {
+        const { playerName, mapId } = data;
+        if (!currentPlayer) return;
+
+        // Check if someone is already waiting on this map
+        if (chessWaiting[mapId] && chessWaiting[mapId].socketId !== socket.id) {
+            const waiter = chessWaiting[mapId];
+            delete chessWaiting[mapId];
+
+            // Create a game - randomly assign colors
+            const whiteIsWaiter = Math.random() < 0.5;
+            const gameId = `chess_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+            chessGames[gameId] = {
+                whiteSocketId: whiteIsWaiter ? waiter.socketId : socket.id,
+                blackSocketId: whiteIsWaiter ? socket.id : waiter.socketId,
+                whiteName: whiteIsWaiter ? waiter.playerName : playerName,
+                blackName: whiteIsWaiter ? playerName : waiter.playerName
+            };
+
+            // Notify both players
+            io.to(waiter.socketId).emit('chessMatchFound', {
+                gameId,
+                opponentName: playerName,
+                yourColor: whiteIsWaiter ? 'white' : 'black'
+            });
+            socket.emit('chessMatchFound', {
+                gameId,
+                opponentName: waiter.playerName,
+                yourColor: whiteIsWaiter ? 'black' : 'white'
+            });
+
+            console.log(`[Chess] Match started: ${chessGames[gameId].whiteName} (white) vs ${chessGames[gameId].blackName} (black)`);
+        } else {
+            // No one waiting - add to queue
+            chessWaiting[mapId] = { socketId: socket.id, playerName, gameId: data.gameId };
+            console.log(`[Chess] ${playerName} waiting for opponent on ${mapId}`);
+        }
+    });
+
+    /**
+     * Player makes a chess move
+     */
+    socket.on('chessMove', (data) => {
+        const { gameId, fromR, fromC, toR, toC, promotion } = data;
+        const game = chessGames[gameId];
+        if (!game) return;
+
+        // Determine opponent socket
+        const opponentSocketId = game.whiteSocketId === socket.id ? game.blackSocketId : game.whiteSocketId;
+
+        // Forward move to opponent
+        io.to(opponentSocketId).emit('chessOpponentMove', {
+            fromR, fromC, toR, toC, promotion
+        });
+    });
+
+    /**
+     * Player resigns
+     */
+    socket.on('chessResign', (data) => {
+        const { gameId } = data;
+        const game = chessGames[gameId];
+        if (!game) return;
+
+        const opponentSocketId = game.whiteSocketId === socket.id ? game.blackSocketId : game.whiteSocketId;
+        io.to(opponentSocketId).emit('chessOpponentResigned', {});
+
+        delete chessGames[gameId];
+        console.log(`[Chess] Game ${gameId} ended by resignation`);
+    });
+
+    /**
+     * Player leaves chess (closes window)
+     */
+    socket.on('chessLeave', (data) => {
+        const { gameId } = data;
+
+        // Remove from waiting queue
+        for (const mapId in chessWaiting) {
+            if (chessWaiting[mapId].socketId === socket.id) {
+                delete chessWaiting[mapId];
+            }
+        }
+
+        // If in a game, notify opponent
+        if (gameId && chessGames[gameId]) {
+            const game = chessGames[gameId];
+            const opponentSocketId = game.whiteSocketId === socket.id ? game.blackSocketId : game.whiteSocketId;
+            io.to(opponentSocketId).emit('chessOpponentLeft', {});
+            delete chessGames[gameId];
+            console.log(`[Chess] Game ${gameId} ended - player left`);
+        }
+    });
+
     /**
      * Player disconnects
      */
     socket.on('disconnect', () => {
+        // Clean up chess state on disconnect
+        for (const mapId in chessWaiting) {
+            if (chessWaiting[mapId].socketId === socket.id) {
+                delete chessWaiting[mapId];
+            }
+        }
+        for (const gameId in chessGames) {
+            const game = chessGames[gameId];
+            if (game.whiteSocketId === socket.id || game.blackSocketId === socket.id) {
+                const opponentSocketId = game.whiteSocketId === socket.id ? game.blackSocketId : game.whiteSocketId;
+                io.to(opponentSocketId).emit('chessOpponentLeft', {});
+                delete chessGames[gameId];
+            }
+        }
+
         if (currentPlayer && currentMapId) {
             // Remove from map
             if (maps[currentMapId] && maps[currentMapId][currentPlayer.odId]) {
