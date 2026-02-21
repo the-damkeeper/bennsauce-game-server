@@ -1895,7 +1895,7 @@ io.on('connection', (socket) => {
      * Player wants to play chess - join waiting queue or match with waiting player
      */
     socket.on('chessJoin', (data) => {
-        const { playerName, mapId } = data;
+        const { playerName, mapId, chessStats } = data;
         if (!currentPlayer) return;
 
         // Check if someone is already waiting on this map
@@ -1914,22 +1914,24 @@ io.on('connection', (socket) => {
                 blackName: whiteIsWaiter ? playerName : waiter.playerName
             };
 
-            // Notify both players
+            // Notify both players with each other's stats
             io.to(waiter.socketId).emit('chessMatchFound', {
                 gameId,
                 opponentName: playerName,
-                yourColor: whiteIsWaiter ? 'white' : 'black'
+                yourColor: whiteIsWaiter ? 'white' : 'black',
+                opponentStats: chessStats || null
             });
             socket.emit('chessMatchFound', {
                 gameId,
                 opponentName: waiter.playerName,
-                yourColor: whiteIsWaiter ? 'black' : 'white'
+                yourColor: whiteIsWaiter ? 'black' : 'white',
+                opponentStats: waiter.chessStats || null
             });
 
             console.log(`[Chess] Match started: ${chessGames[gameId].whiteName} (white) vs ${chessGames[gameId].blackName} (black)`);
         } else {
             // No one waiting - add to queue
-            chessWaiting[mapId] = { socketId: socket.id, playerName, gameId: data.gameId };
+            chessWaiting[mapId] = { socketId: socket.id, playerName, gameId: data.gameId, chessStats: chessStats || null };
             console.log(`[Chess] ${playerName} waiting for opponent on ${mapId}`);
         }
     });
